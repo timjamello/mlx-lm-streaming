@@ -209,6 +209,29 @@ def setup_arg_parser():
         help="Number of tokens to draft when using speculative decoding.",
         default=3,
     )
+    parser.add_argument(
+        "--streaming",
+        action="store_true",
+        help="Enable StreamingLLM mode with wait-k policy for streaming generation.",
+    )
+    parser.add_argument(
+        "--wait-k",
+        type=int,
+        default=3,
+        help="Wait-k parameter for streaming generation (number of source words to wait before generating). Default: 3.",
+    )
+    parser.add_argument(
+        "--max-new-words",
+        type=int,
+        default=None,
+        help="Maximum number of words to generate in streaming mode. Default: None (generate until end of source).",
+    )
+    parser.add_argument(
+        "--max-tokens-per-word",
+        type=int,
+        default=50,
+        help="Maximum tokens per word in streaming mode. Default: 50.",
+    )
     return parser
 
 
@@ -779,6 +802,144 @@ def generate(
     return text
 
 
+def stream_generate_streaming_llm(
+    model: nn.Module,
+    tokenizer: Union[PreTrainedTokenizer, TokenizerWrapper],
+    prompt: Union[str, mx.array, List[int]],
+    wait_k: int = 3,
+    max_new_words: Optional[int] = None,
+    max_tokens_per_word: int = 50,
+    temp: float = 0.0,
+    top_p: float = 1.0,
+    min_p: float = 0.0,
+    repetition_penalty: Optional[float] = None,
+    repetition_context_size: int = 20,
+    **kwargs,
+) -> Generator[GenerationResponse, None, None]:
+    """
+    A generator producing text using StreamingLLM's wait-k policy.
+
+    This function enables streaming generation where the model processes
+    source text incrementally and generates output with a configurable lag
+    (wait-k policy). This is useful for simultaneous translation, streaming
+    transcription, and real-time text processing.
+
+    Args:
+        model (nn.Module): The model to use for generation. Must support streaming
+            mode (e.g., Qwen2ModelStreaming).
+        tokenizer (PreTrainedTokenizer): The tokenizer.
+        prompt (Union[str, mx.array, List[int]]): The input prompt string or
+            integer tokens. This is treated as the "source" text in streaming mode.
+        wait_k (int): Number of source words to wait for before generating each
+            target word. Default: ``3``.
+        max_new_words (Optional[int]): Maximum number of words to generate. If None,
+            generates until end of source. Default: ``None``.
+        max_tokens_per_word (int): Maximum tokens per generated word. Default: ``50``.
+        temp (float): Sampling temperature. Default: ``0.0`` (greedy).
+        top_p (float): Sampling top-p. Default: ``1.0``.
+        min_p (float): Sampling min-p. Default: ``0.0``.
+        repetition_penalty (Optional[float]): Repetition penalty factor. Default: ``None``.
+        repetition_context_size (int): Context size for repetition penalty. Default: ``20``.
+        kwargs: Additional keyword arguments (ignored for compatibility).
+
+    Yields:
+        GenerationResponse: An instance containing the generated text segment and
+            associated metadata. The response includes:
+            - text: Generated text for the current word
+            - token: Last token of the word
+            - word_complete: True when a word boundary is reached
+            - source_words_read: Number of source words processed so far
+            - target_words_generated: Number of target words generated so far
+
+    Example:
+        >>> from mlx_lm import load
+        >>> from mlx_lm.generate import stream_generate_streaming_llm
+        >>>
+        >>> model, tokenizer = load("Qwen/Qwen2.5-0.5B-Instruct")
+        >>> prompt = "Translate to French: Hello, how are you?"
+        >>>
+        >>> for response in stream_generate_streaming_llm(
+        ...     model, tokenizer, prompt, wait_k=3
+        ... ):
+        ...     if response.word_complete:
+        ...         print(response.text, end=' ', flush=True)
+        ...         print(f"[{response.source_words_read} source words]")
+    """
+    from .streaming_generate import stream_generate_streaming
+    from .streaming_data_utils import StreamingDataPreparator
+
+    if not isinstance(tokenizer, TokenizerWrapper):
+        tokenizer = TokenizerWrapper(tokenizer)
+
+    # Prepare source text with chat template
+    preparator = StreamingDataPreparator(tokenizer)
+
+    if isinstance(prompt, str):
+        formatted_text, token_ids, seg_lens = preparator.prepare_source_text(prompt)
+    elif isinstance(prompt, (list, mx.array)):
+        # Already tokenized
+        token_ids = prompt.tolist() if isinstance(prompt, mx.array) else prompt
+        # Simple word segmentation: assume each token is a word
+        seg_lens = [1] * len(token_ids)
+    else:
+        raise ValueError("Prompt must be a string, list of ints, or mx.array")
+
+    # Track timing
+    tic = time.perf_counter()
+    prompt_time = 0
+    first_token = True
+    total_tokens = 0
+    source_words_total = len(seg_lens)
+
+    # Call our streaming generation function
+    for output in stream_generate_streaming(
+        model=model,
+        tokenizer=tokenizer._tokenizer if hasattr(tokenizer, "_tokenizer") else tokenizer,
+        source_token_ids=token_ids,
+        source_seg_len=seg_lens,
+        wait_k=wait_k,
+        max_new_words=max_new_words,
+        max_tokens_per_word=max_tokens_per_word,
+        temp=temp,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
+        repetition_context_size=repetition_context_size,
+    ):
+        if first_token:
+            prompt_time = time.perf_counter() - tic
+            first_token = False
+            tic = time.perf_counter()
+
+        total_tokens += 1
+        elapsed = time.perf_counter() - tic
+
+        # Create GenerationResponse compatible output
+        response = GenerationResponse(
+            text=output.get("text", ""),
+            token=output.get("token", 0),
+            logprobs=mx.array([0.0]),  # Not provided by streaming generation
+            from_draft=False,
+            prompt_tokens=len(token_ids),
+            prompt_tps=len(token_ids) / prompt_time if prompt_time > 0 else 0.0,
+            generation_tokens=total_tokens,
+            generation_tps=total_tokens / elapsed if elapsed > 0 else 0.0,
+            peak_memory=mx.get_peak_memory() / 1e9,
+            finish_reason=None,
+        )
+
+        # Add streaming-specific metadata
+        response.word_complete = output.get("word_complete", False)
+        response.source_words_read = output.get("source_words_read", 0)
+        response.target_words_generated = output.get("target_words_generated", 0)
+
+        yield response
+
+    # Final response with finish reason
+    if total_tokens > 0:
+        response.finish_reason = "stop"
+        yield response
+
+
 def _left_pad_prompts(prompts, max_length=None):
     if max_length is None:
         max_length = max(len(p) for p in prompts)
@@ -1214,33 +1375,88 @@ def main():
             raise ValueError("Draft model tokenizer does not match model tokenizer.")
     else:
         draft_model = None
-    sampler = make_sampler(
-        args.temp,
-        args.top_p,
-        args.min_p,
-        args.min_tokens_to_keep,
-        top_k=args.top_k,
-        xtc_probability=args.xtc_probability,
-        xtc_threshold=args.xtc_threshold,
-        xtc_special_tokens=tokenizer.encode("\n") + list(tokenizer.eos_token_ids),
-    )
-    response = generate(
-        model,
-        tokenizer,
-        prompt,
-        max_tokens=args.max_tokens,
-        verbose=args.verbose,
-        sampler=sampler,
-        max_kv_size=args.max_kv_size,
-        prompt_cache=prompt_cache if using_cache else None,
-        kv_bits=args.kv_bits,
-        kv_group_size=args.kv_group_size,
-        quantized_kv_start=args.quantized_kv_start,
-        draft_model=draft_model,
-        num_draft_tokens=args.num_draft_tokens,
-    )
-    if not args.verbose:
-        print(response)
+    # Streaming mode validation
+    if args.streaming:
+        if args.draft_model is not None:
+            raise ValueError("Streaming mode is not compatible with speculative decoding (--draft-model).")
+        if using_cache:
+            raise ValueError("Streaming mode is not compatible with prompt caching (--prompt-cache-file).")
+
+        # Use streaming generation
+        if args.verbose:
+            print("=" * 10)
+            print(f"[Streaming mode] wait-k={args.wait_k}, max_new_words={args.max_new_words}")
+            print("=" * 10)
+
+        text = ""
+        words_generated = 0
+        for response in stream_generate_streaming_llm(
+            model,
+            tokenizer,
+            prompt,
+            wait_k=args.wait_k,
+            max_new_words=args.max_new_words,
+            max_tokens_per_word=args.max_tokens_per_word,
+            temp=args.temp,
+            top_p=args.top_p,
+            min_p=args.min_p,
+        ):
+            if hasattr(response, 'word_complete') and response.word_complete:
+                words_generated += 1
+                if args.verbose:
+                    print(response.text, end=' ', flush=True)
+                    print(f"[read {response.source_words_read} source words]")
+                else:
+                    print(response.text, end=' ', flush=True)
+                text += response.text + " "
+
+        if args.verbose:
+            print()
+            print("=" * 10)
+            if len(text) == 0:
+                print("No text generated for this prompt")
+            else:
+                print(
+                    f"Prompt: {response.prompt_tokens} tokens, "
+                    f"{response.prompt_tps:.3f} tokens-per-sec"
+                )
+                print(
+                    f"Generation: {response.generation_tokens} tokens, "
+                    f"{response.generation_tps:.3f} tokens-per-sec"
+                )
+                print(f"Peak memory: {response.peak_memory:.3f} GB")
+                print(f"Words generated: {words_generated}")
+        elif not args.verbose:
+            print()  # Newline after output
+    else:
+        # Standard generation mode
+        sampler = make_sampler(
+            args.temp,
+            args.top_p,
+            args.min_p,
+            args.min_tokens_to_keep,
+            top_k=args.top_k,
+            xtc_probability=args.xtc_probability,
+            xtc_threshold=args.xtc_threshold,
+            xtc_special_tokens=tokenizer.encode("\n") + list(tokenizer.eos_token_ids),
+        )
+        response = generate(
+            model,
+            tokenizer,
+            prompt,
+            max_tokens=args.max_tokens,
+            verbose=args.verbose,
+            sampler=sampler,
+            max_kv_size=args.max_kv_size,
+            prompt_cache=prompt_cache if using_cache else None,
+            kv_bits=args.kv_bits,
+            kv_group_size=args.kv_group_size,
+            quantized_kv_start=args.quantized_kv_start,
+            draft_model=draft_model,
+            num_draft_tokens=args.num_draft_tokens,
+        )
+        if not args.verbose:
+            print(response)
 
 
 if __name__ == "__main__":
