@@ -59,12 +59,19 @@ class MockModel(nn.Module):
         )
         return logits
 
-    def make_cache(self, streaming: bool = False) -> StreamingCacheList:
+    def make_cache(
+        self,
+        target_position_offset: int = 10000,
+        streaming: bool = False,
+    ) -> StreamingCacheList:
         """Create mock streaming cache."""
         if streaming:
             # Create 4 layers of streaming cache (mix of linear and attention)
             caches = [
-                StreamingCache(cache_type="kv", position_offset=10000) for _ in range(4)
+                StreamingCache(
+                    cache_type="kv", target_position_offset=target_position_offset
+                )
+                for _ in range(4)
             ]
             return StreamingCacheList(caches)
         return None

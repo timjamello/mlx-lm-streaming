@@ -270,7 +270,7 @@ class TestStreamingCache(unittest.TestCase):
 
     def test_state_dict(self):
         """Test state serialization and loading."""
-        cache1 = StreamingCache(cache_type="kv", position_offset=5000)
+        cache1 = StreamingCache(cache_type="kv", target_position_offset=5000)
 
         # Add tokens
         source_keys, source_values = self._create_test_tensors(5)
@@ -289,7 +289,7 @@ class TestStreamingCache(unittest.TestCase):
         # Verify state is restored
         self.assertEqual(cache2.source_length, 5)
         self.assertEqual(cache2.target_length, 3)
-        self.assertEqual(cache2.stream_state.position_offset, 5000)
+        self.assertEqual(cache2.stream_state.target_position_offset, 5000)
 
         # Verify tensors are restored
         np.testing.assert_array_equal(
@@ -407,7 +407,7 @@ class TestIntegrationScenarios(unittest.TestCase):
 
     def test_streaming_generation_flow(self):
         """Test a complete streaming generation flow."""
-        cache = StreamingCache(cache_type="kv", position_offset=10000)
+        cache = StreamingCache(cache_type="kv", target_position_offset=10000)
 
         # Simulate streaming input processing
         for i in range(3):
@@ -449,7 +449,7 @@ class TestIntegrationScenarios(unittest.TestCase):
     def test_position_offset_handling(self):
         """Test that position offsets are properly maintained."""
         position_offset = 5000
-        cache = StreamingCache(cache_type="kv", position_offset=position_offset)
+        cache = StreamingCache(cache_type="kv", target_position_offset=position_offset)
 
         # Add source tokens
         source_keys = mx.random.normal((1, 8, 5, 64))
@@ -457,14 +457,14 @@ class TestIntegrationScenarios(unittest.TestCase):
         cache.update_source(source_keys, source_values)
 
         # Position offset should be preserved in state
-        self.assertEqual(cache.stream_state.position_offset, position_offset)
+        self.assertEqual(cache.stream_state.target_position_offset, position_offset)
 
         # Save and restore state
         state_dict = cache.state_dict()
         new_cache = StreamingCache(cache_type="kv")
         new_cache.load_state_dict(state_dict)
 
-        self.assertEqual(new_cache.stream_state.position_offset, position_offset)
+        self.assertEqual(new_cache.stream_state.target_position_offset, position_offset)
 
 
 if __name__ == "__main__":

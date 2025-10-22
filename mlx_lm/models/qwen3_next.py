@@ -206,7 +206,7 @@ class ModelArgs(BaseModelArgs):
     full_attention_interval: int = 4
     # Streaming-specific parameters
     streaming_mode: bool = False
-    position_offset: int = 10000
+    target_position_offset: int = 0  # Changed from position_offset
 
 
 class Qwen3NextRMSNormGated(nn.Module):
@@ -288,27 +288,19 @@ class Qwen3NextAttention(nn.Module):
             0, 2, 1, 3
         )
 
-        # Handle position encoding based on cache type
         if isinstance(cache, StreamingCache):
-            # Streaming mode: handle position offsets
+            # Streaming mode: source and target use separate position spaces
             if cache.stream_state.read_mode:
-                # Processing source tokens
+                # Processing source tokens: continuous positions from 0
                 offset = cache.source_length
             else:
-                # Generating target tokens with position offset
-                offset = cache.stream_state.position_offset + cache.target_length
+                # Generating target tokens: separate position space
+                # Starts at target_position_offset (can be 0)
+                offset = cache.target_position_offset + cache.target_length
 
             queries = self.rope(queries, offset=offset)
             keys = self.rope(keys, offset=offset)
             keys, values = cache.update_and_fetch(keys, values)
-        elif cache is not None:
-            # Standard mode
-            queries = self.rope(queries, offset=cache.offset)
-            keys = self.rope(keys, offset=cache.offset)
-            keys, values = cache.update_and_fetch(keys, values)
-        else:
-            queries = self.rope(queries)
-            keys = self.rope(keys)
 
         output = scaled_dot_product_attention(
             queries, keys, values, cache=cache, scale=self.scale, mask=mask
@@ -642,27 +634,29 @@ class Model(nn.Module):
     def layers(self):
         return self.model.layers
 
-    def make_cache(self, streaming: bool = False):
-        """Create cache appropriate for the model configuration."""
+    def make_cache(self, streaming: bool = False, target_position_offset: int = 0):
+        """
+        Create cache appropriate for the model configuration.
+
+        Args:
+            streaming: If True, create StreamingCache for simultaneous input/output
+            target_position_offset: Starting position for target tokens in streaming.
+                0 (default) = separate position space from source
+                Large value (e.g. 10000) = avoid position conflicts with source
+        """
         if streaming:
-            # Create StreamingCache for each layer
             from .streaming_cache import StreamingCache, StreamingCacheList
 
             caches = []
             for layer in self.layers:
                 if layer.is_linear:
-                    # Linear layers don't use KV cache, they use MambaCache
-                    # But we wrap it in StreamingCache for unified interface
+                    # Linear layers use MambaCache (no streaming support yet)
                     cache = MambaCache()
                 else:
                     # Full attention layers use StreamingCache
                     cache = StreamingCache(
                         cache_type="kv",
-                        position_offset=(
-                            self.args.position_offset
-                            if hasattr(self.args, "position_offset")
-                            else 10000
-                        ),
+                        target_position_offset=target_position_offset,
                     )
                 caches.append(cache)
 

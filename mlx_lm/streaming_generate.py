@@ -38,17 +38,12 @@ def streaming_generate_step(
     max_tokens: int = 256,
     temperature: float = 0.0,
     top_p: float = 1.0,
+    target_position_offset: int = 0,  # NEW parameter
     input_stream: Optional[Generator[List[int], None, None]] = None,
     eos_token_ids: Optional[List[int]] = None,
 ) -> Generator[Tuple[int, bool, str], None, None]:
     """
     Generate tokens while processing streaming input.
-
-    This implements the core StreamingLLM algorithm:
-    1. Process initial prompt
-    2. Wait for k input chunks before starting generation
-    3. Alternate between processing new input and generating output
-    4. Handle dynamic input arrival during generation
 
     Args:
         model: The model with streaming support
@@ -58,14 +53,12 @@ def streaming_generate_step(
         max_tokens: Maximum tokens to generate
         temperature: Sampling temperature
         top_p: Top-p sampling parameter
+        target_position_offset: Position offset for target tokens (default 0)
         input_stream: Generator yielding new input token chunks
         eos_token_ids: List of EOS token IDs to stop generation
 
     Yields:
-        Tuple of (token, is_input, mode) where:
-        - token: The token ID
-        - is_input: True if processing input, False if generating
-        - mode: "read" or "write" to indicate current mode
+        Tuple of (token, is_input, mode)
     """
 
     # Initialize state
@@ -227,6 +220,7 @@ def streaming_generate(
     max_tokens: int = 256,
     temperature: float = 0.0,
     top_p: float = 1.0,
+    target_position_offset: int = 0,  # NEW parameter
     verbose: bool = False,
 ) -> Tuple[List[int], List[int]]:
     """
@@ -241,6 +235,9 @@ def streaming_generate(
         max_tokens: Maximum generation length
         temperature: Sampling temperature
         top_p: Top-p sampling
+        target_position_offset: Position offset for target tokens.
+            0 (default) = separate position space
+            Large value = avoid RoPE conflicts
         verbose: Print tokens as they're processed
 
     Returns:
@@ -252,8 +249,10 @@ def streaming_generate(
     else:
         prompt_tokens = prompt
 
-    # Create streaming cache
-    cache = model.make_cache(streaming=True)
+    # Create streaming cache with position offset
+    cache = model.make_cache(
+        streaming=True, target_position_offset=target_position_offset
+    )
 
     # Collect results
     source_tokens = []

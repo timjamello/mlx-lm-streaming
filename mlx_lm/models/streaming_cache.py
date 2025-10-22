@@ -46,7 +46,7 @@ class StreamingCacheState:
     target_length: int = 0
     merged: bool = False
     read_mode: bool = True
-    position_offset: int = 0
+    target_position_offset: int = 0
 
 
 class StreamingCache(_BaseCache):
@@ -62,7 +62,7 @@ class StreamingCache(_BaseCache):
     def __init__(
         self,
         cache_type: str = "kv",
-        position_offset: int = 10000,
+        target_position_offset: int = 0,  # Changed from position_offset, default 0
         max_size: Optional[int] = None,
         keep: int = 4,
         quantization_config: Optional[dict] = None,
@@ -72,7 +72,9 @@ class StreamingCache(_BaseCache):
 
         Args:
             cache_type: Type of underlying cache ("kv", "rotating", "quantized")
-            position_offset: Offset for target token positions to avoid conflicts
+            target_position_offset: Starting position ID for target tokens.
+                0 = target positions start at 0 (separate space from source)
+                N = target positions start at N (useful to avoid RoPE conflicts)
             max_size: Maximum cache size for rotating caches
             keep: Number of tokens to keep for rotating caches
             quantization_config: Configuration for quantized caches
@@ -80,7 +82,7 @@ class StreamingCache(_BaseCache):
         super().__init__()
 
         self.cache_type = cache_type
-        self.position_offset = position_offset
+        self.target_position_offset = target_position_offset  # Renamed
         self.max_size = max_size
         self.keep = keep
         self.quantization_config = quantization_config or {}
@@ -91,7 +93,9 @@ class StreamingCache(_BaseCache):
         self.merged_cache = self._create_cache()
 
         # State tracking
-        self.stream_state = StreamingCacheState(position_offset=position_offset)
+        self.stream_state = StreamingCacheState(
+            target_position_offset=target_position_offset  # Still stored in state
+        )
 
     def _create_cache(self) -> _BaseCache:
         """Create a cache instance based on the specified type."""
@@ -301,7 +305,9 @@ class StreamingCache(_BaseCache):
         self.source_cache = self._create_cache()
         self.target_cache = self._create_cache()
         self.merged_cache = self._create_cache()
-        self.stream_state = StreamingCacheState(position_offset=self.position_offset)
+        self.stream_state = StreamingCacheState(
+            target_position_offset=self.target_position_offset
+        )
 
     def trim_source(self, num_tokens: int) -> None:
         """
@@ -379,7 +385,7 @@ class StreamingCache(_BaseCache):
                 "target_length": self.stream_state.target_length,
                 "merged": self.stream_state.merged,
                 "read_mode": self.stream_state.read_mode,
-                "position_offset": self.stream_state.position_offset,
+                "target_position_offset": self.stream_state.target_position_offset,
             },
         }
 
@@ -399,7 +405,7 @@ class StreamingCache(_BaseCache):
             target_length=state["target_length"],
             merged=state["merged"],
             read_mode=state["read_mode"],
-            position_offset=state["position_offset"],
+            target_position_offset=state["target_position_offset"],
         )
 
         # Rebuild merged cache if needed
