@@ -141,7 +141,15 @@ def stream_generate_streaming(
         next_input = assistant_start_tokens
     else:
         # Use a simple start token
-        next_input = mx.array([[tokenizer.bos_token_id]])
+        # Some tokenizers don't have a BOS token, fall back to EOS or first generated token
+        if hasattr(tokenizer, 'bos_token_id') and tokenizer.bos_token_id is not None:
+            next_input = mx.array([[tokenizer.bos_token_id]])
+        elif hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id is not None:
+            # Use EOS as start token (common pattern for some tokenizers)
+            next_input = mx.array([[tokenizer.eos_token_id]])
+        else:
+            # Fallback: use token ID 0
+            next_input = mx.array([[0]])
 
     # Source position tracking
     source_pos_offset = 0
