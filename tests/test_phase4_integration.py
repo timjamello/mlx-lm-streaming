@@ -418,6 +418,18 @@ class TestExampleScripts(unittest.TestCase):
             module = importlib.util.module_from_spec(spec)
             self.assertIsNotNone(module)
 
+    def test_streaming_visualization_imports(self):
+        """Test that streaming_visualization.py can be imported."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "streaming_visualization",
+            "mlx_lm/examples/streaming_visualization.py",
+        )
+        if spec and spec.loader:
+            module = importlib.util.module_from_spec(spec)
+            self.assertIsNotNone(module)
+
 
 if __name__ == "__main__":
     unittest.main()

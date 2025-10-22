@@ -64,7 +64,74 @@ python mlx_lm/examples/streaming_cli_demo.py \
 
 **Key insight**: Higher wait-k values mean the model waits for more source context before generating each word, potentially improving quality but increasing latency.
 
-### 3. Real-time Streaming (`streaming_realtime.py`)
+### 3. Streaming Visualization (`streaming_visualization.py`)
+
+**Purpose**: Visualize streaming input and output side-by-side (inspired by StreamingLLM's evaluate/streaming_eval.py).
+
+**Usage**:
+```bash
+# Simple visualization (matches StreamingLLM evaluate format)
+python mlx_lm/examples/streaming_visualization.py --mode simple
+
+# Progress visualization with word counts
+python mlx_lm/examples/streaming_visualization.py --mode progress
+
+# Side-by-side with word alignment
+python mlx_lm/examples/streaming_visualization.py --mode side-by-side
+
+# Batch comparison (multiple examples)
+python mlx_lm/examples/streaming_visualization.py --mode batch
+
+# All modes
+python mlx_lm/examples/streaming_visualization.py --mode all
+
+# Custom prompt
+python mlx_lm/examples/streaming_visualization.py \
+    --prompt "Translate to Spanish: Hello world" \
+    --wait-k 3 \
+    --mode simple
+```
+
+**What it demonstrates**:
+- StreamingLLM evaluate-style input/output display
+- Separate lines for "streaming-input:" and "streaming-output:"
+- Live updates as words are generated
+- Word alignment and lag tracking
+- Progress indicators
+- Batch evaluation format
+
+**Output Example (Simple Mode)**:
+```
+================================================================================
+STREAMING VISUALIZATION (wait-k=3)
+================================================================================
+streaming-input:
+Translate to French: The quick brown fox jumps over the lazy dog.
+
+streaming-output:
+Le rapide renard brun saute par-dessus le chien paresseux.
+
+================================================================================
+```
+
+**Output Example (Side-by-Side Mode)**:
+```
+Source words:
+   1. Translate
+   2. to
+   3. French:
+   ...
+
+Streaming generation:
+Target Word          Source Read     Lag
+--------------------------------------------------
+Le                    3/10            lag=2
+rapide                4/10            lag=3
+renard                5/10            lag=3
+...
+```
+
+### 4. Real-time Streaming (`streaming_realtime.py`)
 
 **Purpose**: Simulate real-time streaming scenarios.
 
