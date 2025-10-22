@@ -40,6 +40,11 @@ def create_streaming_attention_mask(
         Attention mask of shape [1, 1, query_len, total_kv_len]
         where True/1 = can attend, False/-inf = cannot attend
     """
+    # Handle zero query length edge case
+    if query_len == 0:
+        # Return empty mask with correct shape
+        return mx.zeros((1, 1, 0, 0), dtype=mx.bfloat16)
+
     # Calculate sizes based on actual cache state
     # The mask size must match what the keys/values will be AFTER update_and_fetch
     if cache.stream_state.merged:
@@ -123,7 +128,19 @@ def create_streaming_attention_mask(
         mask = mx.stack(rows)
 
     # Reshape to [1, 1, query_len, kv_len] for broadcasting
-    return mask[None, None, :, :]
+    mask = mask[None, None, :, :]
+
+    # Validate mask shape
+    expected_shape = (1, 1, query_len, total_kv_len)
+    assert mask.shape == expected_shape, (
+        f"Attention mask shape mismatch: got {mask.shape}, "
+        f"expected {expected_shape} "
+        f"(query_len={query_len}, total_kv_len={total_kv_len}, "
+        f"source_len={source_len}, target_len={target_len}, "
+        f"is_source_query={is_source_query}, merged={cache.stream_state.merged})"
+    )
+
+    return mask
 
 
 def create_streaming_ssm_mask(
@@ -133,19 +150,28 @@ def create_streaming_ssm_mask(
 ) -> Optional[mx.array]:
     """
     Create mask for linear attention (GatedDeltaNet) layers.
-    These layers use state-based processing, so masks work differently.
+
+    SSM layers use state-based processing where the mask indicates
+    valid token positions vs padding.
+
+    Args:
+        query_len: Number of query tokens being processed
+        cache: StreamingCache instance with state information
+        is_source_query: Whether processing source (input) tokens
 
     Returns:
-        Mask for SSM processing or None if not needed
+        Mask of shape [1, query_len] where True = valid, False = masked
+        Or None if no masking needed
     """
     if not is_source_query:
-        # Target tokens in SSM don't need special masking
-        # The state update handles causality
+        # Target tokens: State-based causality handles masking automatically
         return None
 
-    # For source tokens, we might want to mask padding
-    # But typically SSMs handle this internally
-    return None
+    # Source tokens: Mark all positions as valid (no padding within chunks)
+    # Shape [1, query_len] to broadcast with [B, S, ...] tensors in conv1d
+    mask = mx.ones((1, query_len), dtype=mx.bool_)
+
+    return mask
 
 
 @dataclass

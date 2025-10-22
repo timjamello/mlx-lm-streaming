@@ -141,19 +141,42 @@ def streaming_generate_step(
     generated_count = 0
     input_chunks_processed = 1  # Initial prompt counts as first chunk
 
-    # If we have an input stream, set it up
+    # If we have an input stream, collect chunks until wait_k
     if input_stream is not None:
+        none_count = 0
+        max_none_retries = 100  # Prevent infinite loop on None chunks
+
         try:
             # Collect more input chunks until we hit wait_k
             while input_chunks_processed < wait_k:
                 new_chunk = next(input_stream)
-                # Handle None (no input available yet) - keep waiting
-                if new_chunk is not None and new_chunk:
+
+                # Handle None (no input available yet)
+                if new_chunk is None:
+                    none_count += 1
+                    if none_count >= max_none_retries:
+                        print(
+                            f"[WARNING] Received {none_count} consecutive None chunks. "
+                            f"Starting generation with {input_chunks_processed} chunks "
+                            f"(expected {wait_k})."
+                        )
+                        break
+                    continue
+
+                # Process actual chunk
+                if new_chunk:
                     state.source_chunks.append(new_chunk)
                     yield from process_input_chunk(new_chunk)
                     input_chunks_processed += 1
+                    none_count = 0  # Reset on successful chunk
+
         except StopIteration:
-            pass  # Input stream ended
+            # Input stream ended early
+            if input_chunks_processed < wait_k:
+                print(
+                    f"[WARNING] Input stream ended after {input_chunks_processed} chunks, "
+                    f"expected {wait_k}. Starting generation early."
+                )
 
     # Now start generation, interleaving with any remaining input
     eos_encountered = False
