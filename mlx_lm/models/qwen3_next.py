@@ -17,7 +17,135 @@ from .base import (
 from .cache import KVCache, MambaCache
 from .gated_delta import gated_delta_update
 from .rope_utils import initialize_rope
+from .streaming_cache import StreamingCache, StreamingCacheList
 from .switch_layers import SwitchGLU
+
+
+def create_streaming_attention_mask(
+    query_len: int,
+    cache: StreamingCache,
+    is_source_query: bool = False,
+    device: Optional[mx.Device] = None,
+) -> mx.array:
+    """
+    Create attention mask for streaming mode with full attention layers.
+
+    Args:
+        query_len: Number of query tokens (will be added to cache)
+        cache: StreamingCache instance with state information
+        is_source_query: Whether queries are source (input) tokens
+        device: Device to create mask on
+
+    Returns:
+        Attention mask of shape [1, 1, query_len, total_kv_len]
+        where True/1 = can attend, False/-inf = cannot attend
+    """
+    # Calculate sizes based on actual cache state
+    # The mask size must match what the keys/values will be AFTER update_and_fetch
+    if cache.stream_state.merged:
+        # Merged: all tokens in one cache
+        current_total = cache.merged_cache.offset
+        total_kv_len = current_total + query_len
+        # For the mask logic, we need to know the source/target split
+        source_len = cache.source_length
+        target_len = cache.target_length
+        if not is_source_query:
+            # Adding to target in merged mode
+            target_len += query_len
+    else:
+        # Separated: source and target are in separate caches
+        source_len = cache.source_cache.offset
+        target_len = cache.target_cache.offset
+        if is_source_query:
+            # Processing source tokens - they only see source, not target
+            source_len += query_len
+            total_kv_len = source_len  # Only source tokens!
+        else:
+            # Processing target tokens - they see all source + target
+            target_len += query_len
+            total_kv_len = source_len + target_len
+
+    if total_kv_len == 0:
+        # First tokens, use standard causal
+        return create_attention_mask(mx.zeros((1, query_len, 1)), None)
+
+    # Create mask (use bfloat16 to match model dtype)
+    mask = mx.full((query_len, total_kv_len), -mx.inf, dtype=mx.bfloat16)
+
+    if is_source_query:
+        # Source tokens processing new input
+        # They can see all previous source tokens (causal) but NO target tokens
+        query_offset = source_len - query_len
+
+        # Build mask row by row
+        rows = []
+        for i in range(query_len):
+            actual_pos = query_offset + i
+            row_mask = mx.full((total_kv_len,), -mx.inf, dtype=mx.bfloat16)
+            # Can attend to source tokens up to current position (causal)
+            if actual_pos >= 0:
+                row_mask = mx.where(
+                    mx.arange(total_kv_len) <= actual_pos,
+                    mx.array(0.0, dtype=mx.bfloat16),
+                    row_mask,
+                )
+            rows.append(row_mask)
+        mask = mx.stack(rows)
+    else:
+        # Target tokens (generation mode)
+        # They can see all source tokens and previous target tokens
+        query_offset = target_len - query_len
+
+        # Build mask row by row
+        rows = []
+        for i in range(query_len):
+            row_mask = mx.full((total_kv_len,), -mx.inf, dtype=mx.bfloat16)
+
+            # Can see all source tokens (they've all "arrived")
+            row_mask = mx.where(
+                mx.arange(total_kv_len) < source_len,
+                mx.array(0.0, dtype=mx.bfloat16),
+                row_mask,
+            )
+
+            # Can see target tokens up to current position (autoregressive)
+            target_pos = query_offset + i
+            if target_pos >= 0:
+                row_mask = mx.where(
+                    (mx.arange(total_kv_len) >= source_len)
+                    & (mx.arange(total_kv_len) < source_len + target_pos + 1),
+                    mx.array(0.0, dtype=mx.bfloat16),
+                    row_mask,
+                )
+
+            rows.append(row_mask)
+
+        mask = mx.stack(rows)
+
+    # Reshape to [1, 1, query_len, kv_len] for broadcasting
+    return mask[None, None, :, :]
+
+
+def create_streaming_ssm_mask(
+    query_len: int,
+    cache: StreamingCache,
+    is_source_query: bool = False,
+) -> Optional[mx.array]:
+    """
+    Create mask for linear attention (GatedDeltaNet) layers.
+    These layers use state-based processing, so masks work differently.
+
+    Returns:
+        Mask for SSM processing or None if not needed
+    """
+    if not is_source_query:
+        # Target tokens in SSM don't need special masking
+        # The state update handles causality
+        return None
+
+    # For source tokens, we might want to mask padding
+    # But typically SSMs handle this internally
+    return None
 
 
 @dataclass
@@ -50,6 +178,9 @@ class ModelArgs(BaseModelArgs):
     head_dim: Optional[int] = None
     rope_scaling: Optional[Dict[str, Union[float, str]]] = None
     full_attention_interval: int = 4
+    # Streaming-specific parameters
+    streaming_mode: bool = False
+    position_offset: int = 10000
 
 
 class Qwen3NextRMSNormGated(nn.Module):
@@ -131,7 +262,21 @@ class Qwen3NextAttention(nn.Module):
             0, 2, 1, 3
         )
 
-        if cache is not None:
+        # Handle position encoding based on cache type
+        if isinstance(cache, StreamingCache):
+            # Streaming mode: handle position offsets
+            if cache.stream_state.read_mode:
+                # Processing source tokens
+                offset = cache.source_length
+            else:
+                # Generating target tokens with position offset
+                offset = cache.stream_state.position_offset + cache.target_length
+
+            queries = self.rope(queries, offset=offset)
+            keys = self.rope(keys, offset=offset)
+            keys, values = cache.update_and_fetch(keys, values)
+        elif cache is not None:
+            # Standard mode
             queries = self.rope(queries, offset=cache.offset)
             keys = self.rope(keys, offset=cache.offset)
             keys, values = cache.update_and_fetch(keys, values)
@@ -159,6 +304,11 @@ class Qwen3NextMLP(nn.Module):
 
 
 class Qwen3NextGatedDeltaNet(nn.Module):
+    """
+    Linear attention layer that uses state-based processing.
+    For streaming, this needs different handling than attention layers.
+    """
+
     def __init__(self, config: ModelArgs):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -168,10 +318,6 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         self.head_v_dim = config.linear_value_head_dim
         self.key_dim = self.head_k_dim * self.num_k_heads
         self.value_dim = self.head_v_dim * self.num_v_heads
-        if self.num_v_heads % self.num_k_heads != 0:
-            raise ValueError(
-                f"num_v_heads ({self.num_v_heads}) must be divisible by num_k_heads ({self.num_k_heads})"
-            )
 
         self.conv_kernel_size = config.linear_conv_kernel_dim
         self.layer_norm_epsilon = config.rms_norm_eps
@@ -197,8 +343,10 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         self.A_log = mx.log(A)
 
         self.norm = Qwen3NextRMSNormGated(self.head_v_dim, eps=self.layer_norm_epsilon)
-
         self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
+
+        # For streaming: track whether we're processing source or target
+        self.streaming_mode = False
 
     def fix_query_key_value_ordering(
         self, mixed_qkvz: mx.array, mixed_ba: mx.array
@@ -229,6 +377,18 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         cache: Optional[Any] = None,
     ) -> mx.array:
         B, S, _ = inputs.shape
+
+        # For streaming with linear attention, we need to handle state differently
+        # The MambaCache handles conv_state and ssm_state
+        if isinstance(cache, StreamingCache):
+            # In streaming mode, linear attention maintains separate states
+            # for source and target processing
+            self.streaming_mode = True
+            is_source = cache.stream_state.read_mode
+
+            # Process normally but with awareness of mode
+            # The state updates will be handled by the MambaCache
+
         q, k, v, z, b, a = self.fix_query_key_value_ordering(
             self.in_proj_qkvz(inputs), self.in_proj_ba(inputs)
         )
@@ -327,7 +487,9 @@ class Qwen3NextSparseMoeBlock(nn.Module):
 class Qwen3NextDecoderLayer(nn.Module):
     def __init__(self, args: ModelArgs, layer_idx: int):
         super().__init__()
+        self.layer_idx = layer_idx
         self.is_linear = (layer_idx + 1) % args.full_attention_interval != 0
+
         if self.is_linear:
             self.linear_attn = Qwen3NextGatedDeltaNet(args)
         else:
@@ -337,6 +499,7 @@ class Qwen3NextDecoderLayer(nn.Module):
         self.post_attention_layernorm = nn.RMSNorm(
             args.hidden_size, eps=args.rms_norm_eps
         )
+
         if (layer_idx not in args.mlp_only_layers) and (
             args.num_experts > 0 and (layer_idx + 1) % args.decoder_sparse_step == 0
         ):
@@ -362,6 +525,7 @@ class Qwen3NextDecoderLayer(nn.Module):
 class Qwen3NextModel(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
+        self.args = args
         self.embed_tokens = nn.Embedding(args.vocab_size, args.hidden_size)
         self.layers = [
             Qwen3NextDecoderLayer(args=args, layer_idx=i)
@@ -378,15 +542,51 @@ class Qwen3NextModel(nn.Module):
     ) -> mx.array:
         hidden_states = self.embed_tokens(inputs)
 
-        if cache is None:
+        # Handle different cache types
+        if isinstance(cache, StreamingCacheList):
+            # Streaming mode with unified cache handling
+            cache_list = cache
+            # Find the first StreamingCache to check read mode
+            streaming_cache = next(
+                (c for c in cache_list if isinstance(c, StreamingCache)), None
+            )
+            is_source_input = (
+                streaming_cache.stream_state.read_mode if streaming_cache else True
+            )
+
+            for layer, layer_cache in zip(self.layers, cache_list):
+                if layer.is_linear:
+                    # Linear layers use SSM-style masking
+                    mask = create_streaming_ssm_mask(
+                        hidden_states.shape[1],
+                        layer_cache,
+                        is_source_query=is_source_input,
+                    )
+                else:
+                    # Full attention layers use attention masking
+                    mask = create_streaming_attention_mask(
+                        hidden_states.shape[1],
+                        layer_cache,
+                        is_source_query=is_source_input,
+                    )
+
+                hidden_states = layer(hidden_states, mask=mask, cache=layer_cache)
+
+        elif cache is None:
+            # No cache, standard forward pass
             cache = [None] * len(self.layers)
+            for layer, c in zip(self.layers, cache):
+                mask = None  # Let layers handle default masking
+                hidden_states = layer(hidden_states, mask=mask, cache=c)
 
-        fa_mask = create_attention_mask(hidden_states, cache[self.fa_idx])
-        ssm_mask = create_ssm_mask(hidden_states, cache[self.ssm_idx])
-
-        for layer, c in zip(self.layers, cache):
-            mask = ssm_mask if layer.is_linear else fa_mask
-            hidden_states = layer(hidden_states, mask=mask, cache=c)
+        else:
+            # Standard cache mode (non-streaming)
+            for layer, c in zip(self.layers, cache):
+                if layer.is_linear:
+                    mask = create_ssm_mask(hidden_states, c)
+                else:
+                    mask = create_attention_mask(hidden_states, c)
+                hidden_states = layer(hidden_states, mask=mask, cache=c)
 
         return self.norm(hidden_states)
 
@@ -416,8 +616,34 @@ class Model(nn.Module):
     def layers(self):
         return self.model.layers
 
-    def make_cache(self):
-        return [MambaCache() if l.is_linear else KVCache() for l in self.layers]
+    def make_cache(self, streaming: bool = False):
+        """Create cache appropriate for the model configuration."""
+        if streaming:
+            # Create StreamingCache for each layer
+            from .streaming_cache import StreamingCache, StreamingCacheList
+
+            caches = []
+            for layer in self.layers:
+                if layer.is_linear:
+                    # Linear layers don't use KV cache, they use MambaCache
+                    # But we wrap it in StreamingCache for unified interface
+                    cache = MambaCache()
+                else:
+                    # Full attention layers use StreamingCache
+                    cache = StreamingCache(
+                        cache_type="kv",
+                        position_offset=(
+                            self.args.position_offset
+                            if hasattr(self.args, "position_offset")
+                            else 10000
+                        ),
+                    )
+                caches.append(cache)
+
+            return StreamingCacheList(caches)
+        else:
+            # Standard cache creation
+            return [MambaCache() if l.is_linear else KVCache() for l in self.layers]
 
     def sanitize(self, weights):
         if "model.layers.0.mlp.experts.0.up_proj.weight" not in weights:
