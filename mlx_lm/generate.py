@@ -891,6 +891,12 @@ def stream_generate_streaming_llm(
     total_tokens = 0
     source_words_total = len(seg_lens)
 
+    # Convert token_ids to mx.array with batch dimension
+    if not isinstance(token_ids, mx.array):
+        token_ids = mx.array([token_ids])  # Shape: (1, num_tokens)
+    elif token_ids.ndim == 1:
+        token_ids = token_ids.reshape(1, -1)
+
     # Call our streaming generation function
     for output in stream_generate_streaming(
         model=model,
