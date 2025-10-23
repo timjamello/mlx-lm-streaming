@@ -239,7 +239,13 @@ class Qwen2ModelStreaming(nn.Module):
         if cache is None:
             cache = [None] * len(self.layers)
 
-        mask = create_attention_mask(h, cache[0])
+        # Only use causal mask during READ mode
+        # During WRITE mode, mask = None to allow full attention to source tokens
+        # Matches StreamingLLM's qwen_streaming.py:879 where causal_mask = None
+        if is_reading:
+            mask = create_attention_mask(h, cache[0])
+        else:
+            mask = None  # No mask during generation = attend to all tokens
 
         for layer, c in zip(self.layers, cache):
             h = layer(h, mask, c, position_ids, is_reading)
