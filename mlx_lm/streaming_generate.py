@@ -169,6 +169,9 @@ def stream_generate_streaming(
 
     # === MAIN STREAMING LOOP ===
     while not state.finished:
+        print(f"[LOOP] is_reading={state.is_reading}, src_read={state.source_words_read}/{len(state.source_seg_len)-1}, tgt_gen={state.target_words_generated}, wait_k={wait_k}")
+        print(f"[LOOP] should_read_next_source={state.should_read_next_source()}, should_write_next_target={state.should_write_next_target()}")
+        print(f"[LOOP] wait_k_satisfied={state.check_wait_k_policy()}")
 
         # === READING PHASE ===
         if state.is_reading and state.should_read_next_source():
@@ -232,6 +235,7 @@ def stream_generate_streaming(
 
             # Check if we can start writing
             if state.check_wait_k_policy():
+                print(f"[READ→WRITE] Wait-k satisfied, switching to writing")
                 state.switch_to_writing()
                 # Reset for next word
                 current_word_tokens = []
@@ -358,13 +362,16 @@ def stream_generate_streaming(
 
                     # Check if we should switch back to reading
                     if not state.finished and state.should_read_next_source():
+                        print(f"[WRITE→READ] Switching back to reading")
                         state.switch_to_reading()
                         current_word_tokens = []  # Reset for next word
                     elif not state.should_read_next_source():
                         # No more source to read, stay in writing mode
+                        print(f"[WRITE] Staying in writing mode (no more source)")
                         current_word_tokens = []
                     else:
                         # Finished
+                        print(f"[FINISH] Setting finished=True")
                         state.finished = True
 
                 else:
@@ -373,6 +380,9 @@ def stream_generate_streaming(
 
         else:
             # No more reading or writing to do
+            print(f"[FALLTHROUGH] Neither reading nor writing conditions met, finishing")
+            print(f"  is_reading={state.is_reading}, should_read={state.should_read_next_source()}")
+            print(f"  should_write={state.should_write_next_target()}")
             state.finished = True
 
 
