@@ -13,4 +13,4 @@ from .generate import (
     stream_generate,
     stream_generate_streaming_llm,
 )
-from .utils import load
+from .utils import load, load_streaming

@@ -7,7 +7,8 @@ with different wait-k values and demonstrates the effect of the policy.
 """
 
 import argparse
-from mlx_lm import load, stream_generate_streaming_llm
+
+from mlx_lm import load_streaming, stream_generate_streaming_llm
 
 
 def demo_wait_k_effect(model, tokenizer, prompt, wait_k_values):
@@ -68,7 +69,7 @@ def main():
     args = parser.parse_args()
 
     print(f"Loading model: {args.model}")
-    model, tokenizer = load(args.model)
+    model, tokenizer = load_streaming(args.model)
 
     print(f"\nPrompt: {args.prompt}")
 

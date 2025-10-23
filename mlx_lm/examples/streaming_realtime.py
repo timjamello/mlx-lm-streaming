@@ -8,7 +8,8 @@ simultaneous translation or live transcription scenarios.
 
 import sys
 import time
-from mlx_lm import load, stream_generate_streaming_llm
+
+from mlx_lm import load_streaming, stream_generate_streaming_llm
 
 
 def realtime_streaming_demo(model, tokenizer, source_text, wait_k=3, delay=0.5):
@@ -141,7 +142,7 @@ def main():
     args = parser.parse_args()
 
     print(f"Loading model: {args.model}")
-    model, tokenizer = load(args.model)
+    model, tokenizer = load_streaming(args.model)
     print("Model loaded successfully!\n")
 
     if args.interactive:

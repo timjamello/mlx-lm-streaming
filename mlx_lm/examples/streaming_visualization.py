@@ -8,7 +8,8 @@ target text on separate lines as streaming progresses.
 """
 
 import sys
-from mlx_lm import load, stream_generate_streaming_llm
+
+from mlx_lm import load_streaming, stream_generate_streaming_llm
 
 
 def streaming_visualization_demo(model, tokenizer, source_text, wait_k=3):
@@ -208,9 +209,7 @@ def batch_comparison(model, tokenizer, examples, wait_k=3):
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="StreamingLLM Visualization Examples"
-    )
+    parser = argparse.ArgumentParser(description="StreamingLLM Visualization Examples")
     parser.add_argument(
         "--model",
         type=str,
@@ -240,25 +239,19 @@ def main():
     args = parser.parse_args()
 
     print(f"Loading model: {args.model}")
-    model, tokenizer = load(args.model)
+    model, tokenizer = load_streaming(args.model)
     print("Model loaded successfully!\n")
 
     if args.mode == "simple" or args.mode == "all":
-        streaming_visualization_demo(
-            model, tokenizer, args.prompt, wait_k=args.wait_k
-        )
+        streaming_visualization_demo(model, tokenizer, args.prompt, wait_k=args.wait_k)
         print()
 
     if args.mode == "progress" or args.mode == "all":
-        streaming_with_progress_demo(
-            model, tokenizer, args.prompt, wait_k=args.wait_k
-        )
+        streaming_with_progress_demo(model, tokenizer, args.prompt, wait_k=args.wait_k)
         print()
 
     if args.mode == "side-by-side" or args.mode == "all":
-        side_by_side_visualization(
-            model, tokenizer, args.prompt, wait_k=args.wait_k
-        )
+        side_by_side_visualization(model, tokenizer, args.prompt, wait_k=args.wait_k)
         print()
 
     if args.mode == "batch" or args.mode == "all":
