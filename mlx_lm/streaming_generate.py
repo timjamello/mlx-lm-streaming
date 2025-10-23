@@ -249,25 +249,35 @@ def stream_generate_streaming(
             # Generate tokens until word boundary
             while not word_finished:
                 print(f"[WRITE TOKEN LOOP] token_count={token_count}, word_finished={word_finished}")
-                # Create position IDs for target
-                # Create position IDs for target
-                # Use cache offset to track total target tokens, not just current word
-                if attn_cache.target_offset == 0:
-                    # First target token - might be multiple if assistant_start_tokens
-                    target_pos = pe_cache_length + len(current_word_tokens)
-                else:
-                    # Subsequent tokens - use cache offset
-                    target_pos = pe_cache_length + attn_cache.target_offset
 
-                position_ids = mx.array([[target_pos]])
+                try:
+                    # Create position IDs for target
+                    # Create position IDs for target
+                    # Use cache offset to track total target tokens, not just current word
+                    if attn_cache.target_offset == 0:
+                        # First target token - might be multiple if assistant_start_tokens
+                        target_pos = pe_cache_length + len(current_word_tokens)
+                    else:
+                        # Subsequent tokens - use cache offset
+                        target_pos = pe_cache_length + attn_cache.target_offset
 
-                # Forward pass in writing mode
-                logits = model(
-                    next_input,
-                    cache=caches,
-                    position_ids=position_ids,
-                    is_reading=False,
-                )
+                    print(f"[WRITE] target_pos={target_pos}, next_input.shape={next_input.shape}")
+                    position_ids = mx.array([[target_pos]])
+
+                    # Forward pass in writing mode
+                    print(f"[WRITE] Calling model forward pass...")
+                    logits = model(
+                        next_input,
+                        cache=caches,
+                        position_ids=position_ids,
+                        is_reading=False,
+                    )
+                    print(f"[WRITE] Model forward pass completed, logits.shape={logits.shape}")
+                except Exception as e:
+                    print(f"[ERROR] Exception in writing phase: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
 
                 # Sample next token
                 logits = logits[:, -1, :]
