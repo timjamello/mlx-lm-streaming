@@ -110,10 +110,24 @@ def stream_generate_streaming(
 
     # Initialize dual caches for all layers
     if hasattr(model, "make_cache"):
-        caches = model.make_cache()  # List of DualStreamingCache
+        caches = (
+            model.make_cache()
+        )  # List of caches (may be mixed: MambaCache + DualStreamingCache)
     else:
         num_layers = len(model.layers)
         caches = [DualStreamingCache() for _ in range(num_layers)]
+
+    # Find first DualStreamingCache for tracking target position
+    # (needed for hybrid models where first layer might be MambaCache)
+    attn_cache = None
+    for cache in caches:
+        if isinstance(cache, DualStreamingCache):
+            attn_cache = cache
+            break
+
+    if attn_cache is None:
+        # Fallback: if no DualStreamingCache found, assume all are DualStreamingCache
+        attn_cache = caches[0]
 
     # Initialize streaming state
     state = StreamingState(
@@ -231,25 +245,33 @@ def stream_generate_streaming(
 
             # Generate tokens until word boundary
             while not word_finished:
-                # Create position IDs for target
-                # Create position IDs for target
-                # Use cache offset to track total target tokens, not just current word
-                if caches[0].target_offset == 0:
-                    # First target token - might be multiple if assistant_start_tokens
-                    target_pos = pe_cache_length + len(current_word_tokens)
-                else:
-                    # Subsequent tokens - use cache offset
-                    target_pos = pe_cache_length + caches[0].target_offset
 
-                position_ids = mx.array([[target_pos]])
+                try:
+                    # Create position IDs for target
+                    # Create position IDs for target
+                    # Use cache offset to track total target tokens, not just current word
+                    if attn_cache.target_offset == 0:
+                        # First target token - might be multiple if assistant_start_tokens
+                        target_pos = pe_cache_length + len(current_word_tokens)
+                    else:
+                        # Subsequent tokens - use cache offset
+                        target_pos = pe_cache_length + attn_cache.target_offset
 
-                # Forward pass in writing mode
-                logits = model(
-                    next_input,
-                    cache=caches,
-                    position_ids=position_ids,
-                    is_reading=False,
-                )
+                    position_ids = mx.array([[target_pos]])
+
+                    # Forward pass in writing mode
+                    logits = model(
+                        next_input,
+                        cache=caches,
+                        position_ids=position_ids,
+                        is_reading=False,
+                    )
+                except Exception as e:
+                    print(f"[ERROR] Exception in writing phase: {e}")
+                    import traceback
+
+                    traceback.print_exc()
+                    raise
 
                 # Sample next token
                 logits = logits[:, -1, :]
@@ -269,34 +291,42 @@ def stream_generate_streaming(
                 # Add to current word
                 current_word_tokens.append(int(next_token[0]))
 
+                # *** CHECK EOS FIRST (highest priority) ***
+                is_eos = eos_criteria(int(next_token[0]))
+                if is_eos:
+                    if state.should_read_next_source():
+                        logits[0, tokenizer.eos_token_id] = float("-inf")
+                        current_word_tokens.pop()
+                        next_token = sampler(logits)
+                        current_word_tokens.append(int(next_token[0]))
+                        word_finished = True
+                    else:
+                        # EOS detected - stop everything immediately
+                        # Remove the EOS token from output (don't show it to user)
+                        current_word_tokens.pop()
+
+                        # Add remaining tokens to output
+                        if len(current_word_tokens) > 0:
+                            all_target_tokens.extend(current_word_tokens)
+                            word_text = tokenizer.decode(current_word_tokens)
+
+                            state.mark_target_written()
+                            yield {
+                                "text": word_text,
+                                "token_ids": current_word_tokens.copy(),
+                                "is_final": True,
+                                "source_words_read": state.source_words_read,
+                                "target_words_generated": state.target_words_generated,
+                                "mode": "write",
+                                "word_complete": True,
+                            }
+
+                        # Stop generation completely
+                        state.finished = True
+                        break  # Exit the word generation loop
+
                 # Check stopping criteria
                 current_word_array = mx.array(current_word_tokens)
-
-                # *** CHECK EOS FIRST (highest priority) ***
-                if eos_criteria(int(next_token[0])):
-                    # EOS detected - stop everything immediately
-                    # Remove the EOS token from output (don't show it to user)
-                    current_word_tokens.pop()
-
-                    # Add remaining tokens to output
-                    if len(current_word_tokens) > 0:
-                        all_target_tokens.extend(current_word_tokens)
-                        word_text = tokenizer.decode(current_word_tokens)
-
-                        state.mark_target_written()
-                        yield {
-                            "text": word_text,
-                            "token_ids": current_word_tokens.copy(),
-                            "is_final": True,
-                            "source_words_read": state.source_words_read,
-                            "target_words_generated": state.target_words_generated,
-                            "mode": "write",
-                            "word_complete": True,
-                        }
-
-                    # Stop generation completely
-                    state.finished = True
-                    break  # Exit the word generation loop
 
                 # 1. Check word boundary
                 should_stop, remove_last = word_boundary_criteria(
@@ -314,9 +344,10 @@ def stream_generate_streaming(
                     # Handle token removal (for space detection)
                     if remove_last and len(current_word_tokens) > 1:
                         removed_token = current_word_tokens.pop()
-                        # Need to pop from cache too
+                        # Need to pop from cache too (only for DualStreamingCache)
                         for cache in caches:
-                            cache.target_cache.offset -= 1
+                            if isinstance(cache, DualStreamingCache):
+                                cache.target_cache.offset -= 1
 
                     # Add to all tokens
                     all_target_tokens.extend(current_word_tokens)
@@ -360,6 +391,13 @@ def stream_generate_streaming(
 
         else:
             # No more reading or writing to do
+            print(
+                f"[FALLTHROUGH] Neither reading nor writing conditions met, finishing"
+            )
+            print(
+                f"  is_reading={state.is_reading}, should_read={state.should_read_next_source()}"
+            )
+            print(f"  should_write={state.should_write_next_target()}")
             state.finished = True
 
 

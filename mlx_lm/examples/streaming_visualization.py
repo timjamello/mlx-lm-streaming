@@ -117,7 +117,7 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=3):
         prompt=source_text,  # Just the source text, no instruction
         wait_k=wait_k,
         max_new_words=2000,
-        system_prompt="Translate the following English paragraph to French and do nothing else.",
+        system_prompt="Translate the following English paragraph to French and do nothing else. Do not do anything except for translating. Do not add commentary",
         temp=0.3,  # Greedy for consistency
         top_p=0.8,
     ):
@@ -376,7 +376,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="mlx-community/Qwen2.5-32B-Instruct-4bit",
+        default="mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
         help="Model path",
     )
     parser.add_argument(
