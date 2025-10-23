@@ -296,18 +296,24 @@ def stream_generate_streaming(
 
                 # Add to current word
                 current_word_tokens.append(int(next_token[0]))
+                print(f"[WRITE] Sampled token: {int(next_token[0])}, current_word_tokens: {current_word_tokens}")
 
                 # Check stopping criteria
                 current_word_array = mx.array(current_word_tokens)
 
                 # *** CHECK EOS FIRST (highest priority) ***
-                if eos_criteria(int(next_token[0])):
+                is_eos = eos_criteria(int(next_token[0]))
+                print(f"[WRITE] EOS check: is_eos={is_eos}, eos_token_id={tokenizer.eos_token_id if hasattr(tokenizer, 'eos_token_id') else 'unknown'}")
+                if is_eos:
+                    print(f"[EOS DETECTED] Stopping generation. current_word_tokens before pop: {current_word_tokens}")
                     # EOS detected - stop everything immediately
                     # Remove the EOS token from output (don't show it to user)
                     current_word_tokens.pop()
+                    print(f"[EOS] After pop, current_word_tokens: {current_word_tokens}")
 
                     # Add remaining tokens to output
                     if len(current_word_tokens) > 0:
+                        print(f"[EOS] Yielding partial word before stopping")
                         all_target_tokens.extend(current_word_tokens)
                         word_text = tokenizer.decode(current_word_tokens)
 
@@ -323,6 +329,7 @@ def stream_generate_streaming(
                         }
 
                     # Stop generation completely
+                    print(f"[EOS] Setting state.finished=True and breaking")
                     state.finished = True
                     break  # Exit the word generation loop
 
