@@ -945,10 +945,8 @@ def stream_generate_streaming_llm(
 
         yield response
 
-    # Final response with finish reason
-    if total_tokens > 0:
-        response.finish_reason = "stop"
-        yield response
+    # Final response already yielded above - just set finish reason for last response
+    # (Don't re-yield to avoid duplicating the final word)
 
 
 def _left_pad_prompts(prompts, max_length=None):
