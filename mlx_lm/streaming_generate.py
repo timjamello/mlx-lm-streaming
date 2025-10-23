@@ -326,9 +326,10 @@ def stream_generate_streaming(
                     # Handle token removal (for space detection)
                     if remove_last and len(current_word_tokens) > 1:
                         removed_token = current_word_tokens.pop()
-                        # Need to pop from cache too
+                        # Need to pop from cache too (only for DualStreamingCache)
                         for cache in caches:
-                            cache.target_cache.offset -= 1
+                            if isinstance(cache, DualStreamingCache):
+                                cache.target_cache.offset -= 1
 
                     # Add to all tokens
                     all_target_tokens.extend(current_word_tokens)
