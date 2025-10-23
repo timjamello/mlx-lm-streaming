@@ -908,6 +908,9 @@ def stream_generate_streaming_llm(
     elif token_ids.ndim == 1:
         token_ids = token_ids.reshape(1, -1)
 
+    # Get assistant start tokens from the preparator
+    assistant_start_tokens = mx.array([preparator.assistant_tokens])
+
     # Call our streaming generation function
     for output in stream_generate_streaming(
         model=model,
@@ -917,6 +920,7 @@ def stream_generate_streaming_llm(
         wait_k=wait_k,
         max_new_words=max_new_words,
         max_tokens_per_word=max_tokens_per_word,
+        assistant_start_tokens=assistant_start_tokens,
         temp=temp,
         top_p=top_p,
         repetition_penalty=repetition_penalty,

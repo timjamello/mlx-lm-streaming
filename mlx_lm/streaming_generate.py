@@ -225,6 +225,7 @@ def stream_generate_streaming(
 
         # === WRITING PHASE ===
         elif not state.is_reading and state.should_write_next_target():
+            print(f"\n[DEBUG] Entering WRITING phase - source_words_read={state.source_words_read}, target_words_generated={state.target_words_generated}")
             token_count = 0
             word_finished = False
 
@@ -257,8 +258,13 @@ def stream_generate_streaming(
                 token_count += 1
                 total_tokens_generated += 1
 
+                # DEBUG: Show what's being generated
+                token_id = int(next_token[0])
+                token_text = tokenizer.decode([token_id])
+                print(f"[DEBUG WRITE] Token #{token_count}: id={token_id}, text='{token_text}', target_pos={target_pos}, is_reading=False, current_word_len={len(current_word_tokens)}")
+
                 # Add to current word
-                current_word_tokens.append(int(next_token[0]))
+                current_word_tokens.append(token_id)
 
                 # Check stopping criteria
                 current_word_array = mx.array(current_word_tokens)
