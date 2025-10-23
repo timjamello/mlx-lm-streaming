@@ -877,16 +877,6 @@ def stream_generate_streaming_llm(
     if isinstance(prompt, str):
         formatted_text, token_ids, seg_lens = preparator.prepare_source_text(prompt)
 
-        # DEBUG: Check for mismatch
-        total_from_segs = sum(seg_lens)
-        actual_tokens = len(token_ids)
-        if total_from_segs != actual_tokens:
-            print(f"[DEBUG] MISMATCH in prepare_source_text:")
-            print(f"  Actual token_ids: {actual_tokens} tokens")
-            print(f"  Sum of seg_lens: {total_from_segs}")
-            print(f"  seg_lens: {seg_lens}")
-            print(f"  Difference: {total_from_segs - actual_tokens}")
-
     elif isinstance(prompt, (list, mx.array)):
         # Already tokenized
         token_ids = prompt.tolist() if isinstance(prompt, mx.array) else prompt
