@@ -85,15 +85,17 @@ class StreamingAttention(nn.Module):
             # Determine offset/position for RoPE
             if position_ids is not None:
                 offset = int(position_ids.flatten()[0])
+                # DEBUG: Check if position_ids is being used
+                if isinstance(cache, DualStreamingCache) and not is_reading:
+                    print(f"  [ATTN DEBUG] position_ids provided: {position_ids.tolist()}, offset={offset}")
             else:
                 if isinstance(cache, DualStreamingCache):
                     offset = cache.source_offset if is_reading else cache.target_offset
                 else:
                     offset = cache.offset
-
-            # DEBUG: Log RoPE offset during generation
-            if isinstance(cache, DualStreamingCache) and not is_reading:
-                print(f"  [ATTN DEBUG] RoPE offset={offset}, target_offset={cache.target_offset}, source_offset={cache.source_offset}")
+                # DEBUG: position_ids not provided, using cache offset
+                if isinstance(cache, DualStreamingCache) and not is_reading:
+                    print(f"  [ATTN DEBUG] position_ids=None, using cache offset={offset}")
 
             # Apply RoPE with computed offset
             queries = self.rope(queries, offset=offset)
