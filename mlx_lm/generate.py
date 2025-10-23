@@ -911,6 +911,13 @@ def stream_generate_streaming_llm(
     # Get assistant start tokens from the preparator
     assistant_start_tokens = mx.array([preparator.assistant_tokens])
 
+    # *** FIX: Auto-compute pe_cache_length to avoid position overlap ***
+    # Target tokens must use different position IDs than source tokens
+    # Set pe_cache_length = source length to create separate position space
+    # Source positions: 0, 1, 2, ..., source_len-1
+    # Target positions: source_len, source_len+1, source_len+2, ...
+    pe_cache_length = int(token_ids.shape[1])  # Length of source tokens
+
     # Call our streaming generation function
     for output in stream_generate_streaming(
         model=model,
@@ -921,6 +928,7 @@ def stream_generate_streaming_llm(
         max_new_words=max_new_words,
         max_tokens_per_word=max_tokens_per_word,
         assistant_start_tokens=assistant_start_tokens,
+        pe_cache_length=pe_cache_length,  # Pass computed value
         temp=temp,
         top_p=top_p,
         repetition_penalty=repetition_penalty,
