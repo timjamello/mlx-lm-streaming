@@ -117,7 +117,7 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=3):
         prompt=source_text,  # Just the source text, no instruction
         wait_k=wait_k,
         max_new_words=2000,
-        system_prompt="Translate the following English paragraph to French",
+        system_prompt="Translate the following English paragraph to French and do nothing else.",
         temp=0.3,  # Greedy for consistency
         top_p=0.8,
     ):
@@ -199,7 +199,7 @@ def simple_streaming_visualization(model, tokenizer, source_text, wait_k=3):
         prompt=source_text,  # Just the source text
         wait_k=wait_k,
         max_new_words=200,
-        system_prompt="Translate the following English paragraph to French",
+        system_prompt="Translate all following English to French",
         temp=0.0,
     ):
         # Show source words as they're read
@@ -376,7 +376,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="Qwen/Qwen2.5-0.5B-Instruct",
+        default="mlx-community/Qwen2.5-32B-Instruct-4bit",
         help="Model path",
     )
     parser.add_argument(
@@ -389,7 +389,7 @@ def main():
     parser.add_argument(
         "--wait-k",
         type=int,
-        default=3,
+        default=7,
         help="Wait-k value",
     )
     parser.add_argument(
