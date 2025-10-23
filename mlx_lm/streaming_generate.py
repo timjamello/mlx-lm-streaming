@@ -1,18 +1,19 @@
 # Copyright © 2023-2024 Apple Inc.
 # Streaming generation for StreamingLLM
 
-from typing import Optional, List, Dict, Generator
+from typing import Dict, Generator, List, Optional
+
 import mlx.core as mx
 import mlx.nn as nn
 
 from .models.streaming_cache import DualStreamingCache
-from .streaming_utils import StreamingState, calculate_wait_words
-from .streaming_stopping_criteria import (
-    WordBoundaryStoppingCriteria,
-    MaxLengthStoppingCriteria,
-    EOSStoppingCriteria
-)
 from .sample_utils import make_sampler
+from .streaming_stopping_criteria import (
+    EOSStoppingCriteria,
+    MaxLengthStoppingCriteria,
+    WordBoundaryStoppingCriteria,
+)
+from .streaming_utils import StreamingState, calculate_wait_words
 
 
 def stream_generate_streaming(
@@ -31,7 +32,7 @@ def stream_generate_streaming(
     top_p: float = 1.0,
     repetition_penalty: Optional[float] = None,
     repetition_context_size: Optional[int] = 20,
-    **kwargs
+    **kwargs,
 ) -> Generator[Dict, None, None]:
     """
     Generate tokens using streaming policy (wait-k).
@@ -67,6 +68,7 @@ def stream_generate_streaming(
         - source_words_read: Number of source words read so far
         - target_words_generated: Number of target words generated
         - mode: Current mode ('read' or 'write')
+        - word_complete: True when a word has been completed (write mode), False otherwise
 
     Algorithm:
         1. Initialize dual caches and state
@@ -117,14 +119,12 @@ def stream_generate_streaming(
         source_seg_len=source_seg_len,
         wait_k=wait_k,
         max_target_words=max_new_words,
-        pe_cache_length=pe_cache_length
+        pe_cache_length=pe_cache_length,
     )
 
     # Initialize stopping criteria
     word_boundary_criteria = WordBoundaryStoppingCriteria(
-        tokenizer=tokenizer,
-        max_tokens_per_word=50,
-        end_tokens=[end_token]
+        tokenizer=tokenizer, max_tokens_per_word=50, end_tokens=[end_token]
     )
 
     max_length_criteria = MaxLengthStoppingCriteria(max_length=max_tokens)
@@ -142,9 +142,9 @@ def stream_generate_streaming(
     else:
         # Use a simple start token
         # Some tokenizers don't have a BOS token, fall back to EOS or first generated token
-        if hasattr(tokenizer, 'bos_token_id') and tokenizer.bos_token_id is not None:
+        if hasattr(tokenizer, "bos_token_id") and tokenizer.bos_token_id is not None:
             next_input = mx.array([[tokenizer.bos_token_id]])
-        elif hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id is not None:
+        elif hasattr(tokenizer, "eos_token_id") and tokenizer.eos_token_id is not None:
             # Use EOS as start token (common pattern for some tokenizers)
             next_input = mx.array([[tokenizer.eos_token_id]])
         else:
@@ -174,13 +174,15 @@ def stream_generate_streaming(
 
             # Get source chunk
             source_chunk = source_token_ids[
-                :, source_pos_offset:source_pos_offset + tokens_to_read
+                :, source_pos_offset : source_pos_offset + tokens_to_read
             ]
 
             # Safety check: ensure chunk is not empty
             if source_chunk.shape[1] == 0:
                 # This shouldn't happen, but handle it gracefully
-                print(f"Warning: Empty source_chunk despite tokens_to_read={tokens_to_read}")
+                print(
+                    f"Warning: Empty source_chunk despite tokens_to_read={tokens_to_read}"
+                )
                 print(f"  source_token_ids.shape: {source_token_ids.shape}")
                 print(f"  source_pos_offset: {source_pos_offset}")
                 print(f"  Skipping this segment...")
@@ -192,16 +194,12 @@ def stream_generate_streaming(
 
             # Create position IDs for this chunk
             position_ids = mx.arange(
-                source_pos_offset,
-                source_pos_offset + tokens_to_read
+                source_pos_offset, source_pos_offset + tokens_to_read
             ).reshape(1, -1)
 
             # Forward pass in reading mode
             _ = model(
-                source_chunk,
-                cache=caches,
-                position_ids=position_ids,
-                is_reading=True
+                source_chunk, cache=caches, position_ids=position_ids, is_reading=True
             )
 
             # Update state
@@ -215,7 +213,8 @@ def stream_generate_streaming(
                 "is_final": False,
                 "source_words_read": state.source_words_read,
                 "target_words_generated": state.target_words_generated,
-                "mode": "read"
+                "mode": "read",
+                "word_complete": False,
             }
 
             # Check if we can start writing
@@ -240,7 +239,7 @@ def stream_generate_streaming(
                     next_input,
                     cache=caches,
                     position_ids=position_ids,
-                    is_reading=False
+                    is_reading=False,
                 )
 
                 # Sample next token
@@ -251,9 +250,7 @@ def stream_generate_streaming(
                     if len(all_target_tokens) > 0:
                         context = all_target_tokens[-repetition_context_size:]
                         logits = apply_repetition_penalty(
-                            logits,
-                            context,
-                            repetition_penalty
+                            logits, context, repetition_penalty
                         )
 
                 next_token = sampler(logits)
@@ -268,8 +265,7 @@ def stream_generate_streaming(
 
                 # 1. Check word boundary
                 should_stop, remove_last = word_boundary_criteria(
-                    current_word_array,
-                    token_count
+                    current_word_array, token_count
                 )
 
                 # 2. Check EOS
@@ -304,10 +300,12 @@ def stream_generate_streaming(
                     yield {
                         "text": word_text,
                         "token_ids": current_word_tokens.copy(),
-                        "is_final": state.finished or not state.should_write_next_target(),
+                        "is_final": state.finished
+                        or not state.should_write_next_target(),
                         "source_words_read": state.source_words_read,
                         "target_words_generated": state.target_words_generated,
-                        "mode": "write"
+                        "mode": "write",
+                        "word_complete": True,
                     }
 
                     # Check if we should switch back to reading
@@ -330,9 +328,7 @@ def stream_generate_streaming(
 
 
 def apply_repetition_penalty(
-    logits: mx.array,
-    context_tokens: List[int],
-    penalty: float
+    logits: mx.array, context_tokens: List[int], penalty: float
 ) -> mx.array:
     """
     Apply repetition penalty to logits.
@@ -368,7 +364,7 @@ def generate_streaming(
     system_prompt: str = "",
     split_mode: str = "word",
     verbose: bool = False,
-    **kwargs
+    **kwargs,
 ) -> str:
     """
     Convenient wrapper for streaming generation.
@@ -408,7 +404,7 @@ def generate_streaming(
         system_prompt=system_prompt,
         split_mode=split_mode,
         add_space=kwargs.get("add_space", False),
-        pe_cache_length=kwargs.get("pe_cache_length", 0)
+        pe_cache_length=kwargs.get("pe_cache_length", 0),
     )
 
     if verbose:
@@ -429,7 +425,7 @@ def generate_streaming(
         assistant_start_tokens=prepared["assistant_start_tokens"],
         split_mode=split_mode,
         end_token=prepared["metadata"]["end_token"],
-        **kwargs
+        **kwargs,
     ):
         if chunk["mode"] == "write" and chunk["text"]:
             generated_text += chunk["text"]
