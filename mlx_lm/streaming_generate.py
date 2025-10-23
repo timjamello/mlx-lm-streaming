@@ -110,7 +110,9 @@ def stream_generate_streaming(
 
     # Initialize dual caches for all layers
     if hasattr(model, "make_cache"):
-        caches = model.make_cache()  # List of caches (may be mixed: MambaCache + DualStreamingCache)
+        caches = (
+            model.make_cache()
+        )  # List of caches (may be mixed: MambaCache + DualStreamingCache)
     else:
         num_layers = len(model.layers)
         caches = [DualStreamingCache() for _ in range(num_layers)]
@@ -169,9 +171,6 @@ def stream_generate_streaming(
 
     # === MAIN STREAMING LOOP ===
     while not state.finished:
-        print(f"[LOOP] is_reading={state.is_reading}, src_read={state.source_words_read}/{len(state.source_seg_len)-1}, tgt_gen={state.target_words_generated}, wait_k={wait_k}")
-        print(f"[LOOP] should_read_next_source={state.should_read_next_source()}, should_write_next_target={state.should_write_next_target()}")
-        print(f"[LOOP] wait_k_satisfied={state.check_wait_k_policy()}")
 
         # === READING PHASE ===
         if state.is_reading and state.should_read_next_source():
@@ -235,20 +234,17 @@ def stream_generate_streaming(
 
             # Check if we can start writing
             if state.check_wait_k_policy():
-                print(f"[READ→WRITE] Wait-k satisfied, switching to writing")
                 state.switch_to_writing()
                 # Reset for next word
                 current_word_tokens = []
 
         # === WRITING PHASE ===
         elif not state.is_reading and state.should_write_next_target():
-            print(f"[WRITE START] Entering writing phase for word {state.target_words_generated}")
             token_count = 0
             word_finished = False
 
             # Generate tokens until word boundary
             while not word_finished:
-                print(f"[WRITE TOKEN LOOP] token_count={token_count}, word_finished={word_finished}")
 
                 try:
                     # Create position IDs for target
@@ -261,21 +257,19 @@ def stream_generate_streaming(
                         # Subsequent tokens - use cache offset
                         target_pos = pe_cache_length + attn_cache.target_offset
 
-                    print(f"[WRITE] target_pos={target_pos}, next_input.shape={next_input.shape}")
                     position_ids = mx.array([[target_pos]])
 
                     # Forward pass in writing mode
-                    print(f"[WRITE] Calling model forward pass...")
                     logits = model(
                         next_input,
                         cache=caches,
                         position_ids=position_ids,
                         is_reading=False,
                     )
-                    print(f"[WRITE] Model forward pass completed, logits.shape={logits.shape}")
                 except Exception as e:
                     print(f"[ERROR] Exception in writing phase: {e}")
                     import traceback
+
                     traceback.print_exc()
                     raise
 
@@ -296,42 +290,41 @@ def stream_generate_streaming(
 
                 # Add to current word
                 current_word_tokens.append(int(next_token[0]))
-                print(f"[WRITE] Sampled token: {int(next_token[0])}, current_word_tokens: {current_word_tokens}")
 
                 # Check stopping criteria
                 current_word_array = mx.array(current_word_tokens)
 
                 # *** CHECK EOS FIRST (highest priority) ***
                 is_eos = eos_criteria(int(next_token[0]))
-                print(f"[WRITE] EOS check: is_eos={is_eos}, eos_token_id={tokenizer.eos_token_id if hasattr(tokenizer, 'eos_token_id') else 'unknown'}")
                 if is_eos:
-                    print(f"[EOS DETECTED] Stopping generation. current_word_tokens before pop: {current_word_tokens}")
-                    # EOS detected - stop everything immediately
-                    # Remove the EOS token from output (don't show it to user)
-                    current_word_tokens.pop()
-                    print(f"[EOS] After pop, current_word_tokens: {current_word_tokens}")
+                    if state.should_read_next_source():
+                        logits[0, tokenizer.eos_token_id] = float("-inf")
+                        next_token = sampler(logits)
+                        word_finished = True
+                    else:
+                        # EOS detected - stop everything immediately
+                        # Remove the EOS token from output (don't show it to user)
+                        current_word_tokens.pop()
 
-                    # Add remaining tokens to output
-                    if len(current_word_tokens) > 0:
-                        print(f"[EOS] Yielding partial word before stopping")
-                        all_target_tokens.extend(current_word_tokens)
-                        word_text = tokenizer.decode(current_word_tokens)
+                        # Add remaining tokens to output
+                        if len(current_word_tokens) > 0:
+                            all_target_tokens.extend(current_word_tokens)
+                            word_text = tokenizer.decode(current_word_tokens)
 
-                        state.mark_target_written()
-                        yield {
-                            "text": word_text,
-                            "token_ids": current_word_tokens.copy(),
-                            "is_final": True,
-                            "source_words_read": state.source_words_read,
-                            "target_words_generated": state.target_words_generated,
-                            "mode": "write",
-                            "word_complete": True,
-                        }
+                            state.mark_target_written()
+                            yield {
+                                "text": word_text,
+                                "token_ids": current_word_tokens.copy(),
+                                "is_final": True,
+                                "source_words_read": state.source_words_read,
+                                "target_words_generated": state.target_words_generated,
+                                "mode": "write",
+                                "word_complete": True,
+                            }
 
-                    # Stop generation completely
-                    print(f"[EOS] Setting state.finished=True and breaking")
-                    state.finished = True
-                    break  # Exit the word generation loop
+                        # Stop generation completely
+                        state.finished = True
+                        break  # Exit the word generation loop
 
                 # 1. Check word boundary
                 should_stop, remove_last = word_boundary_criteria(
@@ -381,16 +374,13 @@ def stream_generate_streaming(
 
                     # Check if we should switch back to reading
                     if not state.finished and state.should_read_next_source():
-                        print(f"[WRITE→READ] Switching back to reading")
                         state.switch_to_reading()
                         current_word_tokens = []  # Reset for next word
                     elif not state.should_read_next_source():
                         # No more source to read, stay in writing mode
-                        print(f"[WRITE] Staying in writing mode (no more source)")
                         current_word_tokens = []
                     else:
                         # Finished
-                        print(f"[FINISH] Setting finished=True")
                         state.finished = True
 
                 else:
@@ -399,8 +389,12 @@ def stream_generate_streaming(
 
         else:
             # No more reading or writing to do
-            print(f"[FALLTHROUGH] Neither reading nor writing conditions met, finishing")
-            print(f"  is_reading={state.is_reading}, should_read={state.should_read_next_source()}")
+            print(
+                f"[FALLTHROUGH] Neither reading nor writing conditions met, finishing"
+            )
+            print(
+                f"  is_reading={state.is_reading}, should_read={state.should_read_next_source()}"
+            )
             print(f"  should_write={state.should_write_next_target()}")
             state.finished = True
 

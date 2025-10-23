@@ -85,17 +85,11 @@ class StreamingAttention(nn.Module):
             # Determine offset/position for RoPE
             if position_ids is not None:
                 offset = int(position_ids.flatten()[0])
-                # DEBUG: Check if position_ids is being used
-                if isinstance(cache, DualStreamingCache) and not is_reading:
-                    print(f"  [ATTN DEBUG] position_ids provided: {position_ids.tolist()}, offset={offset}")
             else:
                 if isinstance(cache, DualStreamingCache):
                     offset = cache.source_offset if is_reading else cache.target_offset
                 else:
                     offset = cache.offset
-                # DEBUG: position_ids not provided, using cache offset
-                if isinstance(cache, DualStreamingCache) and not is_reading:
-                    print(f"  [ATTN DEBUG] position_ids=None, using cache offset={offset}")
 
             # Apply RoPE with computed offset
             queries = self.rope(queries, offset=offset)
@@ -113,10 +107,6 @@ class StreamingAttention(nn.Module):
                     # *** FIX: Merge caches for attention ***
                     cache.merge_source_target()
                     keys, values = cache.get_merged()
-
-                    # DEBUG: Log merged cache shape
-                    if keys is not None:
-                        print(f"  [ATTN DEBUG] Merged cache - keys.shape={keys.shape}, source_len={cache.source_offset}, target_len={cache.target_offset}")
 
                     # NOTE: We'll separate after attention in the model's __call__
             else:
