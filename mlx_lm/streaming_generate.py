@@ -110,10 +110,22 @@ def stream_generate_streaming(
 
     # Initialize dual caches for all layers
     if hasattr(model, "make_cache"):
-        caches = model.make_cache()  # List of DualStreamingCache
+        caches = model.make_cache()  # List of caches (may be mixed: MambaCache + DualStreamingCache)
     else:
         num_layers = len(model.layers)
         caches = [DualStreamingCache() for _ in range(num_layers)]
+
+    # Find first DualStreamingCache for tracking target position
+    # (needed for hybrid models where first layer might be MambaCache)
+    attn_cache = None
+    for cache in caches:
+        if isinstance(cache, DualStreamingCache):
+            attn_cache = cache
+            break
+
+    if attn_cache is None:
+        # Fallback: if no DualStreamingCache found, assume all are DualStreamingCache
+        attn_cache = caches[0]
 
     # Initialize streaming state
     state = StreamingState(
@@ -234,12 +246,12 @@ def stream_generate_streaming(
                 # Create position IDs for target
                 # Create position IDs for target
                 # Use cache offset to track total target tokens, not just current word
-                if caches[0].target_offset == 0:
+                if attn_cache.target_offset == 0:
                     # First target token - might be multiple if assistant_start_tokens
                     target_pos = pe_cache_length + len(current_word_tokens)
                 else:
                     # Subsequent tokens - use cache offset
-                    target_pos = pe_cache_length + caches[0].target_offset
+                    target_pos = pe_cache_length + attn_cache.target_offset
 
                 position_ids = mx.array([[target_pos]])
 
