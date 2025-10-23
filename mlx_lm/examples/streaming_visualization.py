@@ -15,7 +15,6 @@ import sys
 
 from mlx_lm import load_streaming, stream_generate_streaming_llm
 
-
 # Long paragraph for translation (matches StreamingLLM examples)
 LONG_PARAGRAPH = """
 The quick brown fox jumps over the lazy dog. This pangram contains every letter
@@ -42,27 +41,74 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=3):
         source_text: Source text to translate/process
         wait_k: Wait-k policy parameter
     """
+    import os
+    import shutil
+
     print("=" * 80)
     print(f"LIVE STREAMING VISUALIZATION (wait-k={wait_k})")
     print("=" * 80)
     print()
 
+    # Get terminal width for proper wrapping calculation
+    try:
+        terminal_width = shutil.get_terminal_size().columns
+    except:
+        terminal_width = 80  # fallback
+
     # Parse source words for display
     source_words = source_text.strip().split()
-
-    # Print headers
-    print("streaming-input:")
-    print()  # Space for input stream
-    print("streaming-output:")
-    print()  # Space for output stream
-
-    # Move cursor up to the input line (ANSI escape: move up 3 lines)
-    sys.stdout.write("\033[3A")
-    sys.stdout.flush()
 
     # Track what we've displayed
     last_source_read = 0
     output_words = []
+
+    # Build complete strings for display
+    current_input_text = ""
+    current_output_text = ""
+
+    # Helper function to calculate number of lines text will occupy
+    def calculate_lines(text, width=terminal_width):
+        if not text:
+            return 1
+        # Account for "streaming-input: " or "streaming-output: " prefix on first line
+        lines = 0
+        current_line_length = 0
+        for char in text:
+            if char == "\n":
+                lines += 1
+                current_line_length = 0
+            else:
+                current_line_length += 1
+                if current_line_length >= width:
+                    lines += 1
+                    current_line_length = 1
+        return max(1, lines + (1 if current_line_length > 0 else 0))
+
+    # Clear screen and set up initial display
+    if os.name == "nt":  # Windows
+        os.system("cls")
+    else:  # Unix/Linux/Mac
+        sys.stdout.write("\033[2J\033[H")  # Clear screen and move to top
+
+    # Print initial headers
+    print("=" * 80)
+    print(f"LIVE STREAMING VISUALIZATION (wait-k={wait_k})")
+    print("=" * 80)
+    print()
+
+    # Remember the starting position for our display area
+    sys.stdout.write("\033[s")  # Save cursor position
+
+    # Reserve space for the display
+    print("streaming-input:")
+    print()  # Reserve multiple lines for input
+    print()  # Separator
+    print("streaming-output:")
+    print()  # Reserve multiple lines for output
+    print()  # Extra space
+
+    # Move back to saved position
+    sys.stdout.write("\033[u")  # Restore cursor position
 
     # Stream generation
     for response in stream_generate_streaming_llm(
@@ -70,36 +116,42 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=3):
         tokenizer=tokenizer,
         prompt=f"Translate the following English paragraph to French: {source_text}",
         wait_k=wait_k,
-        max_new_words=200,
-        temp=0.0,  # Greedy for consistency
+        max_new_words=2000,
+        temp=0.3,  # Greedy for consistency
+        top_p=0.8,
     ):
-        # Update input stream display when new source words are read
-        if hasattr(response, "source_words_read") and response.source_words_read > last_source_read:
-            # Move cursor to input line
-            sys.stdout.write("\033[2A")  # Move up 2 lines to input position
-            sys.stdout.write("\r")  # Carriage return to start of line
+        # Update displays by completely redrawing the display area
+        needs_redraw = False
 
-            # Display source words read so far
-            words_to_show = source_words[:response.source_words_read]
-            input_display = " ".join(words_to_show)
-
-            # Clear line and print
-            sys.stdout.write("\033[K")  # Clear to end of line
-            sys.stdout.write(input_display)
-
-            # Move cursor back to output line
-            sys.stdout.write("\033[2B")  # Move down 2 lines
-            sys.stdout.write("\r")  # Carriage return
-            sys.stdout.flush()
-
+        # Check if input stream needs update
+        if (
+            hasattr(response, "source_words_read")
+            and response.source_words_read > last_source_read
+        ):
+            words_to_show = source_words[: response.source_words_read]
+            current_input_text = " ".join(words_to_show)
             last_source_read = response.source_words_read
+            needs_redraw = True
 
-        # Update output stream display when word is complete
+        # Check if output stream needs update
         if hasattr(response, "word_complete") and response.word_complete:
-            # Print the new word on output line
-            sys.stdout.write(response.text + " ")
-            sys.stdout.flush()
             output_words.append(response.text)
+            current_output_text = " ".join(output_words)
+            needs_redraw = True
+
+        if needs_redraw:
+            # Clear the display area and redraw everything
+            sys.stdout.write("\033[u")  # Restore to saved position
+            sys.stdout.write("\033[J")  # Clear from cursor to end of screen
+
+            # Redraw the display
+            print("streaming-input:")
+            print(current_input_text if current_input_text else "")
+            print()  # Separator
+            print("streaming-output:")
+            print(current_output_text if current_output_text else "")
+
+            sys.stdout.flush()
 
     # Final newline after generation completes
     print()
@@ -149,8 +201,11 @@ def simple_streaming_visualization(model, tokenizer, source_text, wait_k=3):
         temp=0.0,
     ):
         # Show source words as they're read
-        if hasattr(response, "source_words_read") and response.source_words_read > last_source_read:
-            new_words = source_words[last_source_read:response.source_words_read]
+        if (
+            hasattr(response, "source_words_read")
+            and response.source_words_read > last_source_read
+        ):
+            new_words = source_words[last_source_read : response.source_words_read]
             for word in new_words:
                 displayed_input_words.append(word)
             last_source_read = response.source_words_read
@@ -208,8 +263,11 @@ def side_by_side_visualization(model, tokenizer, source_text, wait_k=3):
         temp=0.0,
     ):
         # Update source display
-        if hasattr(response, "source_words_read") and response.source_words_read > last_source_read:
-            new_words = source_words[last_source_read:response.source_words_read]
+        if (
+            hasattr(response, "source_words_read")
+            and response.source_words_read > last_source_read
+        ):
+            new_words = source_words[last_source_read : response.source_words_read]
             source_display.extend(new_words)
             last_source_read = response.source_words_read
 
@@ -267,7 +325,9 @@ def word_by_word_trace(model, tokenizer, source_text, wait_k=3):
     print(f"Source: {source_text}")
     print(f"Source words: {len(source_words)}")
     print()
-    print(f"{'Step':<6} {'Target Word':<20} {'Src Read':<10} {'Tgt Gen':<10} {'Lag':<6}")
+    print(
+        f"{'Step':<6} {'Target Word':<20} {'Src Read':<10} {'Tgt Gen':<10} {'Lag':<6}"
+    )
     print("-" * 80)
 
     step = 0
@@ -283,8 +343,16 @@ def word_by_word_trace(model, tokenizer, source_text, wait_k=3):
         if hasattr(response, "word_complete") and response.word_complete:
             step += 1
             word = response.text
-            src_read = response.source_words_read if hasattr(response, "source_words_read") else "?"
-            tgt_gen = response.target_words_generated if hasattr(response, "target_words_generated") else "?"
+            src_read = (
+                response.source_words_read
+                if hasattr(response, "source_words_read")
+                else "?"
+            )
+            tgt_gen = (
+                response.target_words_generated
+                if hasattr(response, "target_words_generated")
+                else "?"
+            )
 
             if isinstance(src_read, int) and isinstance(tgt_gen, int):
                 lag = src_read - tgt_gen
@@ -342,7 +410,9 @@ def main():
     if args.mode == "live":
         live_streaming_visualization(model, tokenizer, source_text, wait_k=args.wait_k)
     elif args.mode == "simple":
-        simple_streaming_visualization(model, tokenizer, source_text, wait_k=args.wait_k)
+        simple_streaming_visualization(
+            model, tokenizer, source_text, wait_k=args.wait_k
+        )
     elif args.mode == "side-by-side":
         side_by_side_visualization(model, tokenizer, source_text, wait_k=args.wait_k)
     elif args.mode == "trace":
@@ -351,7 +421,9 @@ def main():
         print("\n" + "=" * 80)
         print("MODE 1: SIMPLE STREAMING")
         print("=" * 80 + "\n")
-        simple_streaming_visualization(model, tokenizer, source_text, wait_k=args.wait_k)
+        simple_streaming_visualization(
+            model, tokenizer, source_text, wait_k=args.wait_k
+        )
 
         print("\n" + "=" * 80)
         print("MODE 2: SIDE-BY-SIDE")
