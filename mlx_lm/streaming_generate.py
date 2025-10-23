@@ -177,6 +177,19 @@ def stream_generate_streaming(
                 :, source_pos_offset:source_pos_offset + tokens_to_read
             ]
 
+            # Safety check: ensure chunk is not empty
+            if source_chunk.shape[1] == 0:
+                # This shouldn't happen, but handle it gracefully
+                print(f"Warning: Empty source_chunk despite tokens_to_read={tokens_to_read}")
+                print(f"  source_token_ids.shape: {source_token_ids.shape}")
+                print(f"  source_pos_offset: {source_pos_offset}")
+                print(f"  Skipping this segment...")
+                state.mark_source_read()
+                if state.check_wait_k_policy():
+                    state.switch_to_writing()
+                    current_word_tokens = []
+                continue
+
             # Create position IDs for this chunk
             position_ids = mx.arange(
                 source_pos_offset,
