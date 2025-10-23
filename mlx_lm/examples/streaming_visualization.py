@@ -114,9 +114,10 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=3):
     for response in stream_generate_streaming_llm(
         model=model,
         tokenizer=tokenizer,
-        prompt=f"Translate the following English paragraph to French: {source_text}",
+        prompt=source_text,  # Just the source text, no instruction
         wait_k=wait_k,
         max_new_words=2000,
+        system_prompt="Translate the following English paragraph to French",
         temp=0.3,  # Greedy for consistency
         top_p=0.8,
     ):
@@ -195,9 +196,10 @@ def simple_streaming_visualization(model, tokenizer, source_text, wait_k=3):
     for response in stream_generate_streaming_llm(
         model=model,
         tokenizer=tokenizer,
-        prompt=f"Translate the following English paragraph to French: {source_text}",
+        prompt=source_text,  # Just the source text
         wait_k=wait_k,
         max_new_words=200,
+        system_prompt="Translate the following English paragraph to French",
         temp=0.0,
     ):
         # Show source words as they're read
@@ -257,9 +259,10 @@ def side_by_side_visualization(model, tokenizer, source_text, wait_k=3):
     for response in stream_generate_streaming_llm(
         model=model,
         tokenizer=tokenizer,
-        prompt=f"Translate the following English paragraph to French: {source_text}",
+        prompt=source_text,  # Just the source text
         wait_k=wait_k,
         max_new_words=200,
+        system_prompt="Translate the following English paragraph to French",
         temp=0.0,
     ):
         # Update source display
@@ -335,9 +338,10 @@ def word_by_word_trace(model, tokenizer, source_text, wait_k=3):
     for response in stream_generate_streaming_llm(
         model=model,
         tokenizer=tokenizer,
-        prompt=f"Translate the following English paragraph to French: {source_text}",
+        prompt=source_text,  # Just the source text
         wait_k=wait_k,
         max_new_words=200,
+        system_prompt="Translate the following English paragraph to French",
         temp=0.0,
     ):
         if hasattr(response, "word_complete") and response.word_complete:

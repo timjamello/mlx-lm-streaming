@@ -809,6 +809,7 @@ def stream_generate_streaming_llm(
     wait_k: int = 3,
     max_new_words: Optional[int] = None,
     max_tokens_per_word: int = 50,
+    system_prompt: str = "Translate the following English paragraph to French",
     temp: float = 0.0,
     top_p: float = 1.0,
     min_p: float = 0.0,
@@ -830,11 +831,17 @@ def stream_generate_streaming_llm(
         tokenizer (PreTrainedTokenizer): The tokenizer.
         prompt (Union[str, mx.array, List[int]]): The input prompt string or
             integer tokens. This is treated as the "source" text in streaming mode.
+            NOTE: This should be ONLY the source text to process, not including the
+            instruction/task description.
         wait_k (int): Number of source words to wait for before generating each
             target word. Default: ``3``.
         max_new_words (Optional[int]): Maximum number of words to generate. If None,
             generates until end of source. Default: ``None``.
         max_tokens_per_word (int): Maximum tokens per generated word. Default: ``50``.
+        system_prompt (str): The system/instruction prompt that describes the task
+            (e.g., "Translate the following English paragraph to French"). This is
+            kept separate from the source text and NOT segmented word-by-word.
+            Default: ``"Translate the following English paragraph to French"``.
         temp (float): Sampling temperature. Default: ``0.0`` (greedy).
         top_p (float): Sampling top-p. Default: ``1.0``.
         min_p (float): Sampling min-p. Default: ``0.0``.
@@ -856,10 +863,13 @@ def stream_generate_streaming_llm(
         >>> from mlx_lm.generate import stream_generate_streaming_llm
         >>>
         >>> model, tokenizer = load("Qwen/Qwen2.5-0.5B-Instruct")
-        >>> prompt = "Translate to French: Hello, how are you?"
+        >>> source_text = "Hello, how are you?"
+        >>> system_prompt = "Translate the following English paragraph to French"
         >>>
         >>> for response in stream_generate_streaming_llm(
-        ...     model, tokenizer, prompt, wait_k=3
+        ...     model, tokenizer, source_text,
+        ...     wait_k=3,
+        ...     system_prompt=system_prompt
         ... ):
         ...     if response.word_complete:
         ...         print(response.text, end=' ', flush=True)
@@ -872,7 +882,7 @@ def stream_generate_streaming_llm(
         tokenizer = TokenizerWrapper(tokenizer)
 
     # Prepare source text with chat template
-    preparator = StreamingDataPreparator(tokenizer)
+    preparator = StreamingDataPreparator(tokenizer, system_prompt=system_prompt)
 
     if isinstance(prompt, str):
         formatted_text, token_ids, seg_lens = preparator.prepare_source_text(prompt)
