@@ -291,15 +291,14 @@ def stream_generate_streaming(
                 # Add to current word
                 current_word_tokens.append(int(next_token[0]))
 
-                # Check stopping criteria
-                current_word_array = mx.array(current_word_tokens)
-
                 # *** CHECK EOS FIRST (highest priority) ***
                 is_eos = eos_criteria(int(next_token[0]))
                 if is_eos:
                     if state.should_read_next_source():
                         logits[0, tokenizer.eos_token_id] = float("-inf")
+                        current_word_tokens.pop()
                         next_token = sampler(logits)
+                        current_word_tokens.append(int(next_token[0]))
                         word_finished = True
                     else:
                         # EOS detected - stop everything immediately
@@ -325,6 +324,9 @@ def stream_generate_streaming(
                         # Stop generation completely
                         state.finished = True
                         break  # Exit the word generation loop
+
+                # Check stopping criteria
+                current_word_array = mx.array(current_word_tokens)
 
                 # 1. Check word boundary
                 should_stop, remove_last = word_boundary_criteria(
