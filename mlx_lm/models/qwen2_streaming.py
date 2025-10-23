@@ -91,6 +91,10 @@ class StreamingAttention(nn.Module):
                 else:
                     offset = cache.offset
 
+            # DEBUG: Log RoPE offset during generation
+            if isinstance(cache, DualStreamingCache) and not is_reading:
+                print(f"  [ATTN DEBUG] RoPE offset={offset}, target_offset={cache.target_offset}, source_offset={cache.source_offset}")
+
             # Apply RoPE with computed offset
             queries = self.rope(queries, offset=offset)
             keys = self.rope(keys, offset=offset)
@@ -107,6 +111,10 @@ class StreamingAttention(nn.Module):
                     # *** FIX: Merge caches for attention ***
                     cache.merge_source_target()
                     keys, values = cache.get_merged()
+
+                    # DEBUG: Log merged cache shape
+                    if keys is not None:
+                        print(f"  [ATTN DEBUG] Merged cache - keys.shape={keys.shape}, source_len={cache.source_offset}, target_len={cache.target_offset}")
 
                     # NOTE: We'll separate after attention in the model's __call__
             else:
