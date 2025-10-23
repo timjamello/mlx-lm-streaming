@@ -291,8 +291,10 @@ class StreamingState:
 
     def should_read_next_source(self) -> bool:
         """Check if we should read the next source word."""
+        # Cap at len-1 to exclude the end token (last segment)
+        # Matches StreamingLLM's generation/generate.py:1171
         return (
-            self.source_words_read < len(self.source_seg_len) and
+            self.source_words_read < len(self.source_seg_len) - 1 and
             not self.finished
         )
 
@@ -333,9 +335,11 @@ class StreamingState:
         Returns:
             True if we have waited for enough source words
         """
+        # Cap at len-1 to exclude the end token from wait-k calculation
+        # Matches StreamingLLM's generation/generate.py:1171
         required_source_words = min(
             self.wait_k + self.target_words_generated,
-            len(self.source_seg_len)
+            len(self.source_seg_len) - 1
         )
         return self.source_words_read >= required_source_words
 
