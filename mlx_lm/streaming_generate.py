@@ -242,11 +242,13 @@ def stream_generate_streaming(
 
         # === WRITING PHASE ===
         elif not state.is_reading and state.should_write_next_target():
+            print(f"[WRITE START] Entering writing phase for word {state.target_words_generated}")
             token_count = 0
             word_finished = False
 
             # Generate tokens until word boundary
             while not word_finished:
+                print(f"[WRITE TOKEN LOOP] token_count={token_count}, word_finished={word_finished}")
                 # Create position IDs for target
                 # Create position IDs for target
                 # Use cache offset to track total target tokens, not just current word
