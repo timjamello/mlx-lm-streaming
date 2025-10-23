@@ -72,19 +72,6 @@ class StreamingAttention(nn.Module):
         position_ids: Optional[mx.array] = None,
         is_reading: bool = True,
     ) -> mx.array:
-        """
-        Forward pass for streaming attention.
-
-        Args:
-            x: Input tensor of shape (B, L, D)
-            mask: Optional attention mask
-            cache: DualStreamingCache or standard cache
-            position_ids: Custom position IDs for each token. If None, uses cache.offset
-            is_reading: If True, updates source_cache; if False, updates target_cache
-
-        Returns:
-            Output tensor of shape (B, L, D)
-        """
         B, L, D = x.shape
 
         queries, keys, values = self.q_proj(x), self.k_proj(x), self.v_proj(x)
@@ -97,14 +84,9 @@ class StreamingAttention(nn.Module):
         if cache is not None:
             # Determine offset/position for RoPE
             if position_ids is not None:
-                # Custom position IDs for streaming
-                # For now, use the first position ID as offset (assumes contiguous)
-                # Future enhancement: support non-contiguous position IDs
                 offset = int(position_ids.flatten()[0])
             else:
-                # Fall back to cache offset
                 if isinstance(cache, DualStreamingCache):
-                    # Use appropriate offset based on reading/writing mode
                     offset = cache.source_offset if is_reading else cache.target_offset
                 else:
                     offset = cache.offset
@@ -116,11 +98,17 @@ class StreamingAttention(nn.Module):
             # Route to appropriate cache based on mode
             if isinstance(cache, DualStreamingCache):
                 if is_reading:
-                    # Reading phase: update source cache
+                    # Reading phase: update source cache ONLY
                     keys, values = cache.update_source(keys, values)
                 else:
                     # Writing phase: update target cache
-                    keys, values = cache.update_target(keys, values)
+                    cache.update_target(keys, values)
+
+                    # *** FIX: Merge caches for attention ***
+                    cache.merge_source_target()
+                    keys, values = cache.get_merged()
+
+                    # NOTE: We'll separate after attention in the model's __call__
             else:
                 # Standard cache (non-streaming mode)
                 keys, values = cache.update_and_fetch(keys, values)
@@ -133,6 +121,15 @@ class StreamingAttention(nn.Module):
             queries, keys, values, cache=cache, scale=self.scale, mask=mask
         )
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
+
+        # *** FIX: Separate caches after attention (writing phase only) ***
+        if (
+            cache is not None
+            and isinstance(cache, DualStreamingCache)
+            and not is_reading
+        ):
+            cache.separate_source_target()
+
         return self.o_proj(output)
 
 

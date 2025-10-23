@@ -39,8 +39,8 @@ def streaming_visualization_demo(model, tokenizer, source_text, wait_k=3):
     # Print streaming output header
     print("streaming-output:")
 
-    # Collect output words as they're generated
-    output_words = []
+    # Track number of words for final stats
+    word_count = 0
 
     # Stream generation
     for response in stream_generate_streaming_llm(
@@ -49,15 +49,13 @@ def streaming_visualization_demo(model, tokenizer, source_text, wait_k=3):
         prompt=source_text,
         wait_k=wait_k,
         max_new_words=100,
-        temp=0.0,  # Greedy for consistency
+        temp=0.7,  # Greedy for consistency
     ):
-        # Only update when a complete word is generated
+        # Only print when a complete word is generated
         if hasattr(response, "word_complete") and response.word_complete:
-            output_words.append(response.text)
-
-            # Update the output line (overwrite previous)
-            output_text = " ".join(output_words)
-            print(f"\r{output_text}", end="", flush=True)
+            # Print just the new word, not the entire accumulated text
+            print(response.text, end=" ", flush=True)
+            word_count += 1
 
     # Final newline after generation completes
     print()
@@ -66,7 +64,7 @@ def streaming_visualization_demo(model, tokenizer, source_text, wait_k=3):
 
     if hasattr(response, "generation_tps"):
         print(f"Generation speed: {response.generation_tps:.2f} tokens/sec")
-        print(f"Words generated: {len(output_words)}")
+        print(f"Words generated: {word_count}")
         print(f"Peak memory: {response.peak_memory:.2f} GB")
 
 
@@ -93,7 +91,7 @@ def streaming_with_progress_demo(model, tokenizer, source_text, wait_k=3):
 
     print("streaming-output:")
 
-    output_words = []
+    word_count = 0
     max_source_read = 0
 
     for response in stream_generate_streaming_llm(
@@ -105,15 +103,11 @@ def streaming_with_progress_demo(model, tokenizer, source_text, wait_k=3):
         temp=0.0,
     ):
         if hasattr(response, "word_complete") and response.word_complete:
-            output_words.append(response.text)
+            word_count += 1
             max_source_read = max(max_source_read, response.source_words_read)
 
-            # Show output with progress indicator
-            output_text = " ".join(output_words)
-            progress = f"[source: {response.source_words_read}/{source_word_count}, target: {len(output_words)}]"
-
-            # Clear line and print updated output
-            print(f"\r{output_text} {progress}", end="", flush=True)
+            # Print just the new word
+            print(response.text, end=" ", flush=True)
 
     print()
     print()
@@ -141,7 +135,7 @@ def side_by_side_visualization(model, tokenizer, source_text, wait_k=3):
     print(f"{'Target Word':<20} {'Source Read':<15} {'Lag':<10}")
     print("-" * 50)
 
-    output_words = []
+    output_text = ""
 
     for response in stream_generate_streaming_llm(
         model=model,
@@ -157,12 +151,12 @@ def side_by_side_visualization(model, tokenizer, source_text, wait_k=3):
             target_gen = response.target_words_generated
             lag = source_read - target_gen
 
-            output_words.append(word)
+            output_text += word + " "
             print(f"{word:<20} {source_read:>2d}/{len(source_words):<10} lag={lag}")
 
     print()
     print("Final output:")
-    print(" ".join(output_words))
+    print(output_text.strip())
     print("=" * 80)
 
 
@@ -189,7 +183,6 @@ def batch_comparison(model, tokenizer, examples, wait_k=3):
         # Print streaming output
         print("streaming-output:")
 
-        output_words = []
         for response in stream_generate_streaming_llm(
             model=model,
             tokenizer=tokenizer,
@@ -199,8 +192,7 @@ def batch_comparison(model, tokenizer, examples, wait_k=3):
             temp=0.0,
         ):
             if hasattr(response, "word_complete") and response.word_complete:
-                output_words.append(response.text)
-                print(f"\r{' '.join(output_words)}", end="", flush=True)
+                print(response.text, end=" ", flush=True)
 
         print()
         print()

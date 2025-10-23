@@ -99,6 +99,7 @@ def stream_generate_streaming(
         ... ):
         ...     print(chunk["text"], end="", flush=True)
     """
+
     # Create sampler
     sampler = make_sampler(
         temp=temp,
@@ -231,7 +232,15 @@ def stream_generate_streaming(
             # Generate tokens until word boundary
             while not word_finished:
                 # Create position IDs for target
-                target_pos = pe_cache_length + len(current_word_tokens)
+                # Create position IDs for target
+                # Use cache offset to track total target tokens, not just current word
+                if caches[0].target_offset == 0:
+                    # First target token - might be multiple if assistant_start_tokens
+                    target_pos = pe_cache_length + len(current_word_tokens)
+                else:
+                    # Subsequent tokens - use cache offset
+                    target_pos = pe_cache_length + caches[0].target_offset
+
                 position_ids = mx.array([[target_pos]])
 
                 # Forward pass in writing mode
@@ -263,16 +272,38 @@ def stream_generate_streaming(
                 # Check stopping criteria
                 current_word_array = mx.array(current_word_tokens)
 
+                # *** CHECK EOS FIRST (highest priority) ***
+                if eos_criteria(int(next_token[0])):
+                    # EOS detected - stop everything immediately
+                    # Remove the EOS token from output (don't show it to user)
+                    current_word_tokens.pop()
+
+                    # Add remaining tokens to output
+                    if len(current_word_tokens) > 0:
+                        all_target_tokens.extend(current_word_tokens)
+                        word_text = tokenizer.decode(current_word_tokens)
+
+                        state.mark_target_written()
+                        yield {
+                            "text": word_text,
+                            "token_ids": current_word_tokens.copy(),
+                            "is_final": True,
+                            "source_words_read": state.source_words_read,
+                            "target_words_generated": state.target_words_generated,
+                            "mode": "write",
+                            "word_complete": True,
+                        }
+
+                    # Stop generation completely
+                    state.finished = True
+                    break  # Exit the word generation loop
+
                 # 1. Check word boundary
                 should_stop, remove_last = word_boundary_criteria(
                     current_word_array, token_count
                 )
 
-                # 2. Check EOS
-                if eos_criteria(int(next_token[0])):
-                    should_stop = True
-
-                # 3. Check max length
+                # 2. Check max length
                 if max_length_criteria(total_tokens_generated):
                     should_stop = True
                     state.finished = True
@@ -308,9 +339,14 @@ def stream_generate_streaming(
                         "word_complete": True,
                     }
 
+                    # Update next_input to last generated token for continuity
+                    if len(current_word_tokens) > 0:
+                        next_input = mx.array([[current_word_tokens[-1]]])
+
                     # Check if we should switch back to reading
                     if not state.finished and state.should_read_next_source():
                         state.switch_to_reading()
+                        current_word_tokens = []  # Reset for next word
                     elif not state.should_read_next_source():
                         # No more source to read, stay in writing mode
                         current_word_tokens = []

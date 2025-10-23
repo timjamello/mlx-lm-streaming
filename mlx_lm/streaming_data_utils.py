@@ -1,7 +1,8 @@
 # Copyright © 2023-2024 Apple Inc.
 # Data utilities for streaming generation
 
-from typing import List, Tuple, Optional, Dict
+from typing import Dict, List, Optional, Tuple
+
 import mlx.core as mx
 
 
@@ -29,7 +30,7 @@ class StreamingDataPreparator:
         assistant_template: str = "<|im_start|>assistant\n",
         end_token: str = "<|im_end|>\n",
         split_mode: str = "word",
-        add_space: bool = False
+        add_space: bool = False,
     ):
         """
         Initialize data preparator.
@@ -62,16 +63,16 @@ class StreamingDataPreparator:
         else:
             self.system_token_len = 0
 
-        self.user_template_len = len(self._tokenize(user_template.replace("{content}", "")))
+        self.user_template_len = len(
+            self._tokenize(user_template.replace("{content}", ""))
+        )
 
     def _tokenize(self, text: str) -> List[int]:
         """Tokenize text without adding special tokens."""
         return self.tokenizer.encode(text, add_special_tokens=False)
 
     def prepare_source_text(
-        self,
-        source_text: str,
-        include_system: bool = True
+        self, source_text: str, include_system: bool = True
     ) -> Tuple[str, List[int], List[int]]:
         """
         Prepare source text for streaming generation.
@@ -103,8 +104,7 @@ class StreamingDataPreparator:
 
         # Calculate segment lengths including template overhead
         full_segment_lengths = self._calculate_segment_lengths_with_template(
-            source_segments,
-            include_system
+            source_segments, include_system
         )
 
         return full_text, token_ids, full_segment_lengths
@@ -125,7 +125,8 @@ class StreamingDataPreparator:
         elif self.split_mode == "sentence":
             # Simple sentence splitting (can be enhanced)
             import re
-            segments = re.split(r'([.?!])\s+', text)
+
+            segments = re.split(r"([.?!])\s+", text)
             # Re-attach punctuation
             segments = [
                 segments[i] + segments[i + 1] if i + 1 < len(segments) else segments[i]
@@ -149,39 +150,52 @@ class StreamingDataPreparator:
         return segments, token_lengths
 
     def _calculate_segment_lengths_with_template(
-        self,
-        source_segments: List[str],
-        include_system: bool
+        self, source_segments: List[str], include_system: bool
     ) -> List[int]:
         """
-        Calculate segment lengths including template tokens.
+        Calculate segment lengths by tokenizing progressively and finding boundaries.
 
-        Args:
-            source_segments: List of source text segments
-            include_system: Whether system prompt is included
-
-        Returns:
-            List of token lengths [template_len, seg1_len, seg2_len, ..., end_len]
+        This matches StreamingLLM's approach where we tokenize cumulative text
+        to find exact token boundaries.
         """
         segment_lengths = []
 
-        # First segment: template overhead (system + user template start)
-        if include_system:
-            template_len = self.system_token_len + self.user_template_len
+        # Build full text components
+        if include_system and self.system_prompt:
+            system_text = f"<|im_start|>system\n{self.system_prompt}<|im_end|>\n"
         else:
-            template_len = self.user_template_len
+            system_text = ""
 
-        segment_lengths.append(template_len)
+        user_prefix = self.user_template.split("{content}")[0]  # "<|im_start|>user\n"
+        user_suffix = self.user_template.split("{content}")[1]  # "<|im_end|>\n"
 
-        # Add token length for each segment
+        # Track cumulative tokenization
+        cumulative_text = system_text + user_prefix
+        prev_token_count = len(self._tokenize(cumulative_text))
+
+        # First segment is the template overhead
+        segment_lengths.append(prev_token_count)
+
+        # Tokenize progressively to find exact boundaries
         for i, segment in enumerate(source_segments):
-            if i > 0 and self.add_space and self.split_mode == "word":
-                segment = " " + segment
-            tokens = self._tokenize(segment)
-            segment_lengths.append(len(tokens))
+            # Build text with proper spacing
+            if i > 0 and self.split_mode == "word":
+                cumulative_text += " " + segment
+            else:
+                cumulative_text += segment
 
-        # End token
-        segment_lengths.append(len(self.end_tokens))
+            # Tokenize and find difference
+            current_token_count = len(self._tokenize(cumulative_text))
+            segment_token_len = current_token_count - prev_token_count
+
+            segment_lengths.append(segment_token_len)
+            prev_token_count = current_token_count
+
+        # Add end token
+        cumulative_text += user_suffix
+        final_token_count = len(self._tokenize(cumulative_text))
+        end_token_len = final_token_count - prev_token_count
+        segment_lengths.append(end_token_len)
 
         return segment_lengths
 
@@ -195,10 +209,7 @@ class StreamingDataPreparator:
         return mx.array(self.assistant_tokens)
 
     def prepare_metadata(
-        self,
-        source_seg_len: List[int],
-        wait_k: int,
-        pe_cache_length: int = 0
+        self, source_seg_len: List[int], wait_k: int, pe_cache_length: int = 0
     ) -> Dict:
         """
         Prepare metadata needed for streaming generation.
@@ -234,7 +245,7 @@ def prepare_streaming_input(
     system_prompt: str = "",
     split_mode: str = "word",
     add_space: bool = False,
-    pe_cache_length: int = 0
+    pe_cache_length: int = 0,
 ) -> Dict:
     """
     Convenient function to prepare all streaming inputs.
@@ -259,13 +270,12 @@ def prepare_streaming_input(
         tokenizer=tokenizer,
         system_prompt=system_prompt,
         split_mode=split_mode,
-        add_space=add_space
+        add_space=add_space,
     )
 
     # Prepare source
     formatted_text, token_ids, seg_lengths = preparator.prepare_source_text(
-        source_text,
-        include_system=bool(system_prompt)
+        source_text, include_system=bool(system_prompt)
     )
 
     # Get assistant tokens
@@ -273,9 +283,7 @@ def prepare_streaming_input(
 
     # Prepare metadata
     metadata = preparator.prepare_metadata(
-        source_seg_len=seg_lengths,
-        wait_k=wait_k,
-        pe_cache_length=pe_cache_length
+        source_seg_len=seg_lengths, wait_k=wait_k, pe_cache_length=pe_cache_length
     )
 
     return {
