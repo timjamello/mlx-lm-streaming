@@ -162,6 +162,16 @@ def stream_generate_streaming(
             # Calculate how many source tokens to read
             tokens_to_read = state.get_source_tokens_to_read()
 
+            # Skip if no tokens to read (e.g., empty segment)
+            if tokens_to_read == 0:
+                # Mark as read and continue
+                state.mark_source_read()
+                # Check if we can start writing
+                if state.check_wait_k_policy():
+                    state.switch_to_writing()
+                    current_word_tokens = []
+                continue
+
             # Get source chunk
             source_chunk = source_token_ids[
                 :, source_pos_offset:source_pos_offset + tokens_to_read
