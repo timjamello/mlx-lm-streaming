@@ -36,8 +36,6 @@ from transformers import PreTrainedTokenizer
 
 # Local imports
 from .tokenizer_utils import TokenizerWrapper, load_tokenizer
-from .tuner.utils import dequantize as dequantize_model
-from .tuner.utils import get_total_parameters, load_adapters
 
 # Constants
 MODEL_REMAPPING = {
@@ -53,28 +51,6 @@ MAX_FILE_SIZE_GB = 5
 
 
 def _get_classes(config: dict):
-    """
-    Retrieve the model and model args classes based on the configuration.
-
-    Args:
-        config (dict): The model configuration.
-
-    Returns:
-        A tuple containing the Model class and the ModelArgs class.
-    """
-    model_type = config["model_type"]
-    model_type = MODEL_REMAPPING.get(model_type, model_type)
-    try:
-        arch = importlib.import_module(f"mlx_lm.models.{model_type}")
-    except ImportError:
-        msg = f"Model type {model_type} not supported."
-        logging.error(msg)
-        raise ValueError(msg)
-
-    return arch.Model, arch.ModelArgs
-
-
-def _get_streaming_classes(config: dict):
     """
     Retrieve the streaming model and model args classes based on the configuration.
 
@@ -265,63 +241,11 @@ def load(
     Tuple[nn.Module, TokenizerWrapper, Dict[str, Any]],
 ]:
     """
-    Load the model and tokenizer from a given path or a huggingface repository.
+    Load a streaming model and tokenizer from a given path or a huggingface repository.
 
-    Args:
-        path_or_hf_repo (Path): The path or the huggingface repository to load the model from.
-        tokenizer_config (dict, optional): Configuration parameters specifically for the tokenizer.
-            Defaults to an empty dictionary.
-        model_config(dict, optional): Configuration parameters specifically for the model.
-            Defaults to an empty dictionary.
-        adapter_path (str, optional): Path to the LoRA adapters. If provided, applies LoRA layers
-            to the model. Default: ``None``.
-        lazy (bool): If ``False`` eval the model parameters to make sure they are
-            loaded in memory before returning, otherwise they will be loaded
-            when needed. Default: ``False``
-        return_config (bool: If ``True`` return the model config as the last item..
-        revision (str, optional): A revision id which can be a branch name, a tag, or a commit hash.
-    Returns:
-        Union[Tuple[nn.Module, TokenizerWrapper], Tuple[nn.Module, TokenizerWrapper, Dict[str, Any]]]:
-            A tuple containing the loaded model, tokenizer and, if requested, the model config.
-
-    Raises:
-        FileNotFoundError: If config file or safetensors are not found.
-        ValueError: If model class or args class are not found.
-    """
-    model_path = _download(path_or_hf_repo, revision=revision)
-
-    model, config = load_model(model_path, lazy, model_config=model_config)
-    if adapter_path is not None:
-        model = load_adapters(model, adapter_path)
-        model.eval()
-    tokenizer = load_tokenizer(
-        model_path, tokenizer_config, eos_token_ids=config.get("eos_token_id", None)
-    )
-
-    if return_config:
-        return model, tokenizer, config
-    else:
-        return model, tokenizer
-
-
-def load_streaming(
-    path_or_hf_repo: str,
-    tokenizer_config={},
-    model_config={},
-    adapter_path: Optional[str] = None,
-    lazy: bool = False,
-    return_config: bool = False,
-    revision: str = None,
-) -> Union[
-    Tuple[nn.Module, TokenizerWrapper],
-    Tuple[nn.Module, TokenizerWrapper, Dict[str, Any]],
-]:
-    """
-    Load the streaming variant of a model and tokenizer from a given path or a huggingface repository.
-
-    This function is specifically for loading models that support streaming generation
-    (e.g., Qwen2ModelStreaming). Streaming models support incremental processing with
-    separate position encodings for source and target tokens.
+    This library focuses on streaming generation models (e.g., Qwen2ModelStreaming).
+    Streaming models support incremental processing with separate position encodings
+    for source and target tokens, enabling wait-k policy for real-time generation.
 
     Args:
         path_or_hf_repo (Path): The path or the huggingface repository to load the model from.
@@ -350,11 +274,14 @@ def load_streaming(
         model_path,
         lazy,
         model_config=model_config,
-        get_model_classes=_get_streaming_classes,
     )
+    # Note: Adapter loading removed (tuner module not included in streaming-focused build)
     if adapter_path is not None:
-        model = load_adapters(model, adapter_path)
-        model.eval()
+        raise ValueError(
+            "Adapter loading is not supported in mlx-streaming-llm. "
+            "This library focuses on streaming generation without LoRA adapters."
+        )
+
     tokenizer = load_tokenizer(
         model_path, tokenizer_config, eos_token_ids=config.get("eos_token_id", None)
     )

@@ -13,76 +13,13 @@ import os
 import sys
 import shutil
 
-from mlx_lm import load_streaming, stream_generate_streaming_llm
+from mlx_lm import load, stream_generate
 
 # Simulated stream of diarized speaker segments
-LONG_PARAGRAPH = """
-[Bob]: Hey Alice, how was your weekend? Did you manage to go to that new restaurant?
-[Alice]: Oh, it was great! Yes, we finally went to that Japanese place downtown. The sushi was incredible.
-[Bob]: That sounds amazing. I've been meaning to try it. What did you order?
-[Alice]: We had the omakase menu. The chef's selection was really impressive.
-[Bob]: Juno, can you tell us about omakase dining?
-[Alice]: Yes, I'm curious too. What makes it special?
-[Bob]: And maybe recommend some dishes we should try if we're new to Japanese cuisine?
-[Alice]: That would be helpful. My friend is visiting next week and I'd love to take them somewhere nice.
-[Bob]: Juno, also could you suggest some good Japanese restaurants in the downtown area?
-[Alice]: Oh, and while you're at it, can you explain the difference between sushi and sashimi?
-[Bob]: Right, I always get confused about that.
-[Alice]: Me too! And what about wasabi etiquette? I never know how much to use.
-[Bob]: Juno, are you there? We'd love your input on Japanese dining.
-[Alice]: Maybe she's processing all our questions. We did ask a lot at once!
-[Bob]: True. Juno, just start with whatever you think is most important about omakase.
-[Alice]: Yes, take your time. We're listening.
-"""
+LONG_PARAGRAPH = """La lumière du matin baignait le petit village d'une douceur paisible ; les volets s'ouvraient lentement, dévoilant des rues pavées encore humides de la rosée. Un chat traversa la place principale, poursuivi par le chant lointain d'un coq, tandis que l'odeur du pain frais s'échappait de la boulangerie. Les habitants, souriants et pressés à la fois, se saluaient en partageant des nouvelles simples, et le temps semblait ralentir pour permettre à chacun d'apprécier ce début de journée serein."""
 
 # System prompt for Juno
-JUNO_SYSTEM_PROMPT = """You are Juno, an AI assistant. You are NOT participating in the conversation—you are OBSERVING a live conversation between other people (like Bob and Alice).
-
-## Critical Rules:
-1. You are LISTENING to a conversation, not part of it
-2. You will see messages in the format [Speaker]: text
-3. You are ONLY "Juno" - you are NOT Bob, NOT Alice, NOT any other speaker
-4. DO NOT respond or speak unless someone is clearly addressing you (Juno) and not someone else
-5. When processing conversation, note who is speaking, but do NOT speak for them
-
-## When Someone Addresses You:
-- Look for phrases that address you by name or are clearly intended for you
-- Only THEN should you call the `speak` tool and respond
-- Respond as Juno, the AI assistant who has been listening
-- Do not echo the conversation while observing - your thoughts should be your own
-- Be mindful of interruptions - someone may ask you something, then change the conversation. When this happens, you should stop talking.
-- Do not use the speaking tool unless you intend for your response to be spoken
-- Do not stop speaking if you have not started speaking
-
-# Tools
-
-You may call one or more functions to assist with responding to the conversation.
-
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{"type": "function", "function": {"name": "speak", "description": "Begin speaking (only when addressed!)", "parameters": {"type": "object", "properties": {}, "required": []}}}
-{"type": "function", "function": {"name": "stop_speaking", "description": "Stop speaking", "parameters": {"type": "object", "properties": {}, "required": []}}}
-</tools>
-
-For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
-<tool_call>
-{"name": <function-name>, "arguments": <args-json-object>}
-</tool_call>
-
-## Response Protocol:
-1. When addressed, call: <tool_call>{"name": "speak", "arguments": {}}</tool_call>
-2. Generate your response (ONE complete thought)
-3. IMMEDIATELY call: <tool_call>{"name": "stop_speaking", "arguments": {}}</tool_call>
-4. DO NOT continue the conversation for others
-5. DO NOT generate [Speaker]: tags for other participants
-
-## Prohibited Behaviors:
-- ❌ Generating speech for Bob, Alice, or other participants
-- ❌ Writing [Bob]: or [Alice]: in your output
-- ❌ Continuing past your answer to imagine their responses
-- ❌ Forgetting to call stop_speaking
-
-Remember: You are an OBSERVER until addressed."""
+JUNO_SYSTEM_PROMPT = """Translate the following from French to English. Do not do anything else."""
 
 
 def live_streaming_visualization(model, tokenizer, source_text, wait_k=50):
@@ -148,7 +85,7 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=50):
     sys.stdout.write("\033[u")  # Restore cursor position
 
     # Stream generation - Juno processing conversation
-    for response in stream_generate_streaming_llm(
+    for response in stream_generate(
         model=model,
         tokenizer=tokenizer,
         prompt=source_text,  # The diarized speaker stream
@@ -238,7 +175,7 @@ def main():
         source_text = args.prompt
 
     print(f"Loading model: {args.model}")
-    model, tokenizer = load_streaming(args.model)
+    model, tokenizer = load(args.model)
     print("Model loaded successfully!\n")
 
     live_streaming_visualization(model, tokenizer, source_text, wait_k=args.wait_k)
