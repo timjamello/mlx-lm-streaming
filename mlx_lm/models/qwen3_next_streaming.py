@@ -1,5 +1,3 @@
-# Copyright © 2025 Apple Inc.
-# Streaming variant of Qwen3Next for StreamingLLM implementation
 
 from __future__ import annotations
 
@@ -142,7 +140,6 @@ class StreamingAttention(nn.Module):
         )
 
         if cache is not None:
-            # Determine offset/position for RoPE
             if position_ids is not None:
                 offset = int(position_ids.flatten()[0])
             else:
@@ -151,24 +148,18 @@ class StreamingAttention(nn.Module):
                 else:
                     offset = cache.offset
 
-            # Apply RoPE with computed offset
             queries = self.rope(queries, offset=offset)
             keys = self.rope(keys, offset=offset)
 
-            # Route to appropriate cache based on mode
             if isinstance(cache, DualStreamingCache):
                 if is_reading:
-                    # Reading phase: update source cache ONLY
                     keys, values = cache.update_source(keys, values)
                 else:
-                    # Writing phase: update target cache
                     cache.update_target(keys, values)
 
-                    # Merge caches for attention
                     cache.merge_source_target()
                     keys, values = cache.get_merged()
             else:
-                # Standard cache (non-streaming mode)
                 keys, values = cache.update_and_fetch(keys, values)
         else:
             queries = self.rope(queries)
@@ -179,7 +170,6 @@ class StreamingAttention(nn.Module):
         )
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
 
-        # Separate caches after attention (writing phase only)
         if (
             cache is not None
             and isinstance(cache, DualStreamingCache)
@@ -462,13 +452,10 @@ class Qwen3NextModelStreaming(nn.Module):
         if cache is None:
             cache = [None] * len(self.layers)
 
-        # Create masks based on mode
-        # During WRITE mode (is_reading=False), disable causal mask for attention
-        # to allow full access to source tokens (matching StreamingLLM approach)
         if is_reading:
             fa_mask = create_attention_mask(hidden_states, cache[self.fa_idx])
         else:
-            fa_mask = None  # No mask during generation = attend to all tokens
+            fa_mask = None
 
         ssm_mask = create_ssm_mask(hidden_states, cache[self.ssm_idx])
 

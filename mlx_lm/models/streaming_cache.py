@@ -1,5 +1,3 @@
-# Copyright © 2023-2024 Apple Inc.
-# Streaming cache implementation for StreamingLLM
 
 from typing import Optional, Tuple
 
@@ -23,17 +21,13 @@ class DualStreamingCache(_BaseCache):
     Example usage:
         cache = DualStreamingCache()
 
-        # During source reading phase
         cache.update_source(source_keys, source_values)
 
-        # During target generation phase
         cache.update_target(target_keys, target_values)
 
-        # For attention computation, merge caches
         cache.merge_source_target()
         merged_keys, merged_values = cache.get_merged()
 
-        # After attention, separate back
         cache.separate_source_target()
     """
 
@@ -114,12 +108,11 @@ class DualStreamingCache(_BaseCache):
         target tokens.
         """
         if self._is_merged:
-            return  # Already merged
+            return
 
         source_len = self.source_cache.offset
         target_len = self.target_cache.offset
 
-        # Get the actual used portions of the caches
         if self.source_cache.keys is not None and source_len > 0:
             source_keys = self.source_cache.keys[..., :source_len, :]
             source_values = self.source_cache.values[..., :source_len, :]
@@ -134,21 +127,16 @@ class DualStreamingCache(_BaseCache):
             target_keys = None
             target_values = None
 
-        # Handle different cases
         if source_keys is None and target_keys is None:
-            # Both empty - shouldn't happen but handle gracefully
             self._merged_keys = None
             self._merged_values = None
         elif target_keys is None or target_len == 0:
-            # Only source tokens
             self._merged_keys = source_keys
             self._merged_values = source_values
         elif source_keys is None or source_len == 0:
-            # Only target tokens (unusual but possible)
             self._merged_keys = target_keys
             self._merged_values = target_values
         else:
-            # Both source and target present - concatenate
             self._merged_keys = mx.concatenate(
                 [source_keys, target_keys],
                 axis=-2
@@ -172,10 +160,8 @@ class DualStreamingCache(_BaseCache):
         merged state flags.
         """
         if not self._is_merged:
-            return  # Already separated
+            return
 
-        # Simply clear the merged cache state
-        # The source and target caches maintain their own state
         self._merged_keys = None
         self._merged_values = None
         self._is_merged = False
@@ -273,7 +259,6 @@ class DualStreamingCache(_BaseCache):
     def meta_state(self, v):
         """Set metadata from serialization."""
         parts = v.split(',')
-        # Metadata will be restored through state setter
         pass
 
     def is_trimmable(self):

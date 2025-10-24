@@ -1,4 +1,3 @@
-# Copyright © 2023-2024 Apple Inc.
 
 import math
 from functools import partial
@@ -46,7 +45,6 @@ def make_sampler(
     if temp == 0:
         return lambda x: mx.argmax(x, axis=-1)
 
-    # Create sampler chain
     sampling_methods = []
     if top_p > 0 and top_p < 1.0:
         sampling_methods.append(lambda x: apply_top_p(x, top_p))
@@ -59,11 +57,9 @@ def make_sampler(
     if top_k > 0:
         sampling_methods.append(lambda x: apply_top_k(x, top_k))
 
-    # Apply the sampling methods
     def sampler(logprobs):
         for method in sampling_methods:
             logprobs = method(logprobs)
-        # Return the sampled token
         return categorical_sampling(logprobs, temp)
 
     return sampler
@@ -163,26 +159,19 @@ def apply_min_p(
         raise ValueError(
             f"`min_tokens_to_keep` has to be a positive integer, but is {min_tokens_to_keep}"
         )
-    # reference implementation: https://github.com/huggingface/transformers/blob/main/src/transformers/generation/logits_process.py#L531-L605
 
-    # Indices sorted in decreasing order
     sorted_indices = mx.argsort(-logprobs, axis=-1)
     sorted_logprobs = mx.take_along_axis(logprobs, sorted_indices, axis=-1)
 
-    # Top probability
     top_logprobs = sorted_logprobs[:, 0:1]
 
-    # Calculate the min_p threshold
     scaled_min_p = top_logprobs + math.log(min_p)
 
-    # Mask tokens that have a probability less than the scaled min_p
     tokens_to_remove = sorted_logprobs < scaled_min_p
     tokens_to_remove[..., :min_tokens_to_keep] = False
 
-    # Create pool of tokens with probability less than scaled min_p
     selected_logprobs = mx.where(tokens_to_remove, -float("inf"), sorted_logprobs)
 
-    # Create a mapping to rearrange back to original indices
     inverse_indices = mx.put_along_axis(
         mx.zeros_like(sorted_indices),
         sorted_indices,
@@ -190,7 +179,6 @@ def apply_min_p(
         axis=-1,
     )
 
-    # Rearrange selected_logprobs back to original order
     original_order_logprobs = mx.take_along_axis(
         selected_logprobs, inverse_indices, axis=-1
     )
@@ -209,15 +197,12 @@ def apply_top_p(logprobs: mx.array, top_p: float) -> mx.array:
     Returns:
         token selected based on the top-p criterion.
     """
-    # referenced implementation from https://github.com/huggingface/transformers/blob/main/src/transformers/generation/logits_process.py#L449-L460
     probs = mx.exp(logprobs)
-    # sort in ascending order
     sorted_indices = mx.argsort(logprobs, axis=-1)
     sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
 
     cumulative_probs = mx.cumsum(sorted_probs, axis=-1)
 
-    # Rearrange cumulative probs back to original order
     inverse_indices = mx.put_along_axis(
         mx.zeros_like(sorted_indices),
         sorted_indices,
@@ -226,7 +211,6 @@ def apply_top_p(logprobs: mx.array, top_p: float) -> mx.array:
     )
     cumulative_probs = mx.take_along_axis(cumulative_probs, inverse_indices, axis=-1)
 
-    # select tokens with cumulative probs below threshold
     return mx.where(
         cumulative_probs > 1 - top_p,
         logprobs,

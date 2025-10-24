@@ -113,11 +113,9 @@ class SPMStreamingDetokenizer(StreamingDetokenizer):
         self.trim_space = trim_space
         self._sep = "\u2581".encode()
 
-        # Extract the tokens in a list from id to text
         self.tokenmap = [""] * (max(tokenizer.vocab.values()) + 1)
         for value, tokenid in tokenizer.vocab.items():
             if value.startswith("<0x"):
-                # Replace bytes with their value
                 self.tokenmap[tokenid] = bytes([int(value[3:5], 16)])
             else:
                 self.tokenmap[tokenid] = value.encode()
@@ -163,15 +161,12 @@ class BPEStreamingDetokenizer(StreamingDetokenizer):
     def __init__(self, tokenizer):
         self.clean_spaces = tokenizer.clean_up_tokenization_spaces
 
-        # Extract the tokens in a list from id to text
         self.tokenmap = [None] * len(tokenizer.vocab)
         for value, tokenid in tokenizer.vocab.items():
             self.tokenmap[tokenid] = value
 
         self.reset()
 
-        # Make the BPE byte decoder from
-        # https://github.com/openai/gpt-2/blob/master/src/encoder.py
         self.make_byte_decoder()
 
     def reset(self):
@@ -207,8 +202,6 @@ class BPEStreamingDetokenizer(StreamingDetokenizer):
         self._unflushed += v
         text = self._decode_bytes(self._unflushed)
 
-        # For multi-byte utf-8 wait until they are complete
-        # For single spaces wait until the next token to clean it if needed
         if not text.endswith("\ufffd") and not (
             len(v) == 1 and self._byte_decoder[v[0]] == 32
         ):

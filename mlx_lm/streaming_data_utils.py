@@ -1,5 +1,3 @@
-# Copyright © 2023-2024 Apple Inc.
-# Data utilities for streaming generation
 
 from typing import Dict, List, Optional, Tuple
 
@@ -52,11 +50,9 @@ class StreamingDataPreparator:
         self.split_mode = split_mode
         self.add_space = add_space
 
-        # Precompute template token lengths
         self.assistant_tokens = self._tokenize(assistant_template)
         self.end_tokens = self._tokenize(end_token)
 
-        # Calculate instruction lengths
         if system_prompt:
             system_text = f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
             self.system_token_len = len(self._tokenize(system_text))
@@ -87,7 +83,6 @@ class StreamingDataPreparator:
             - token_ids: Tokenized IDs
             - segment_lengths: Token length of each word/segment
         """
-        # Format with chat template
         if include_system and self.system_prompt:
             system_text = f"<|im_start|>system\n{self.system_prompt}<|im_end|>\n"
         else:
@@ -96,13 +91,10 @@ class StreamingDataPreparator:
         user_message = self.user_template.format(content=source_text)
         full_text = system_text + user_message
 
-        # Segment source text into words
         source_segments, segment_lengths = self._segment_text(source_text)
 
-        # Tokenize full text
         token_ids = self._tokenize(full_text)
 
-        # Calculate segment lengths including template overhead
         full_segment_lengths = self._calculate_segment_lengths_with_template(
             source_segments, include_system
         )
@@ -120,14 +112,11 @@ class StreamingDataPreparator:
             Tuple of (segments, token_lengths)
         """
         if self.split_mode == "word":
-            # Split by whitespace
             segments = text.split()
         elif self.split_mode == "sentence":
-            # Simple sentence splitting (can be enhanced)
             import re
 
             segments = re.split(r"([.?!])\s+", text)
-            # Re-attach punctuation
             segments = [
                 segments[i] + segments[i + 1] if i + 1 < len(segments) else segments[i]
                 for i in range(0, len(segments), 2)
@@ -135,10 +124,8 @@ class StreamingDataPreparator:
         else:
             raise ValueError(f"Unknown split_mode: {self.split_mode}")
 
-        # Calculate token length for each segment
         token_lengths = []
         for i, segment in enumerate(segments):
-            # Add leading space for words after the first (if needed)
             if i > 0 and self.add_space and self.split_mode == "word":
                 segment_with_space = " " + segment
             else:
@@ -160,38 +147,31 @@ class StreamingDataPreparator:
         """
         segment_lengths = []
 
-        # Build full text components
         if include_system and self.system_prompt:
             system_text = f"<|im_start|>system\n{self.system_prompt}<|im_end|>\n"
         else:
             system_text = ""
 
-        user_prefix = self.user_template.split("{content}")[0]  # "<|im_start|>user\n"
-        user_suffix = self.user_template.split("{content}")[1]  # "<|im_end|>\n"
+        user_prefix = self.user_template.split("{content}")[0]
+        user_suffix = self.user_template.split("{content}")[1]
 
-        # Track cumulative tokenization
         cumulative_text = system_text + user_prefix
         prev_token_count = len(self._tokenize(cumulative_text))
 
-        # First segment is the template overhead
         segment_lengths.append(prev_token_count)
 
-        # Tokenize progressively to find exact boundaries
         for i, segment in enumerate(source_segments):
-            # Build text with proper spacing
             if i > 0 and self.split_mode == "word":
                 cumulative_text += " " + segment
             else:
                 cumulative_text += segment
 
-            # Tokenize and find difference
             current_token_count = len(self._tokenize(cumulative_text))
             segment_token_len = current_token_count - prev_token_count
 
             segment_lengths.append(segment_token_len)
             prev_token_count = current_token_count
 
-        # Add end token
         cumulative_text += user_suffix
         final_token_count = len(self._tokenize(cumulative_text))
         end_token_len = final_token_count - prev_token_count
@@ -273,21 +253,18 @@ def prepare_streaming_input(
         add_space=add_space,
     )
 
-    # Prepare source
     formatted_text, token_ids, seg_lengths = preparator.prepare_source_text(
         source_text, include_system=bool(system_prompt)
     )
 
-    # Get assistant tokens
     assistant_tokens = preparator.get_assistant_start_tokens()
 
-    # Prepare metadata
     metadata = preparator.prepare_metadata(
         source_seg_len=seg_lengths, wait_k=wait_k, pe_cache_length=pe_cache_length
     )
 
     return {
-        "source_token_ids": mx.array(token_ids).reshape(1, -1),  # Add batch dimension
+        "source_token_ids": mx.array(token_ids).reshape(1, -1),
         "source_seg_len": seg_lengths,
         "assistant_start_tokens": assistant_tokens.reshape(1, -1),
         "metadata": metadata,

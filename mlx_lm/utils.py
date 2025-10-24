@@ -1,4 +1,3 @@
-# Copyright © 2023-2024 Apple Inc.
 
 import copy
 import glob
@@ -34,10 +33,8 @@ else:
 from mlx.utils import tree_flatten, tree_map, tree_reduce
 from transformers import PreTrainedTokenizer
 
-# Local imports
 from .tokenizer_utils import TokenizerWrapper, load_tokenizer
 
-# Constants
 MODEL_REMAPPING = {
     "mistral": "llama",
     "llava": "mistral3",
@@ -188,7 +185,6 @@ def load_model(
 
     def _quantize(quantization):
         def class_predicate(p, m):
-            # Handle custom per layer quantizations
             if p in config["quantization"]:
                 return config["quantization"][p]
             if not hasattr(m, "to_quantized"):
@@ -207,7 +203,6 @@ def load_model(
         _quantize(quantization)
 
     elif quantization_config := config.get("quantization_config", False):
-        # Handle legacy quantization config
         quant_method = quantization_config["quant_method"]
         if quant_method == "bitnet":
             from .models.bitlinear_layers import bitnet_quantize
@@ -275,7 +270,6 @@ def load(
         lazy,
         model_config=model_config,
     )
-    # Note: Adapter loading removed (tuner module not included in streaming-focused build)
     if adapter_path is not None:
         raise ValueError(
             "Adapter loading is not supported in mlx-streaming-llm. "
@@ -371,9 +365,7 @@ def upload_to_hub(path: str, upload_repo: str):
 
     card.text = dedent(
         f"""
-        # {upload_repo}
         {provenance}
-        ## Use with mlx
 
         ```bash
         pip install mlx-lm
@@ -439,8 +431,6 @@ def save_model(
     if donate_model:
         model.update(tree_map(lambda _: mx.array([]), model.parameters()))
 
-    # Write the weights and make sure no references are kept other than the
-    # necessary ones
     weights.clear()
     del weights
 
@@ -498,8 +488,6 @@ def quantize_model(
     quant_predicate = quant_predicate or getattr(model, "quant_predicate", None)
     quant_params = {"group_size": group_size, "bits": bits, "mode": mode}
     if "quantization" in quantized_config:
-        # If the model is already partially quantized, return params so that
-        # the config is set on a per-layer basis
         fine_grained_config = True
     else:
         fine_grained_config = False
@@ -526,7 +514,6 @@ def quantize_model(
         mode=mode,
         class_predicate=wrapped_predicate,
     )
-    # support hf model tree #957
     quantized_config["quantization_config"] = quantized_config["quantization"]
 
     bpw = compute_bits_per_weight(model)
@@ -547,16 +534,13 @@ def save_config(
         config (dict): The model configuration.
         config_path (Union[str, Path]): Model configuration file path.
     """
-    # Clean unused keys
     config.pop("_name_or_path", None)
     config.pop("vision_config", None)
     if "quantization" in config:
         config["quantization_config"] = config["quantization"]
 
-    # sort the config for better readability
     config = dict(sorted(config.items()))
 
-    # write the updated config to the config_path (if provided)
     with open(config_path, "w") as fid:
         json.dump(config, fid, indent=4)
 
@@ -601,17 +585,12 @@ def common_prefix_len(list1, list2):
         The length of the common prefix. Returns 0 if lists are empty
         or do not match at the first element.
     """
-    # Determine the maximum possible length of the common prefix
     min_len = min(len(list1), len(list2))
 
-    # Iterate up to the length of the shorter list
     for i in range(min_len):
         if list1[i] != list2[i]:
-            # Mismatch found, the common prefix length is the current index
             return i
 
-    # No mismatch found within the bounds of the shorter list,
-    # so the common prefix length is the length of the shorter list.
     return min_len
 
 

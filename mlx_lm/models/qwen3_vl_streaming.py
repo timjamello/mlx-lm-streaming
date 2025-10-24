@@ -1,5 +1,3 @@
-# Copyright © 2025 Apple Inc.
-# Streaming variant of Qwen3-VL for StreamingLLM
 
 from dataclasses import dataclass
 from typing import Optional

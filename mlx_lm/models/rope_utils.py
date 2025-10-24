@@ -1,4 +1,3 @@
-# Copyright © 2023-2024 Apple Inc.
 
 import math
 from typing import List, Optional, Union
@@ -157,7 +156,7 @@ class YarnRoPE(nn.Module):
 
         def yarn_linear_ramp_mask(min_val, max_val, dim):
             if min_val == max_val:
-                max_val += 0.001  # Prevent singularity
+                max_val += 0.001
 
             linear_func = (mx.arange(dim, dtype=mx.float32) - min_val) / (
                 max_val - min_val

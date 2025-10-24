@@ -1,5 +1,3 @@
-# Copyright © 2023-2024 Apple Inc.
-# Streaming utilities for StreamingLLM implementation
 
 from typing import List, Optional, Tuple
 import mlx.core as mx
@@ -37,8 +35,6 @@ def calculate_wait_words(
         4
     """
     source_word_total = len(source_seg_len)
-    # Wait for wait_k + target_word_idx source words, but not more than available
-    # -1 because we typically don't count the instruction as a "word"
     source_words_waited = min(wait_k + target_word_idx, source_word_total - 1)
     return source_words_waited
 
@@ -60,11 +56,11 @@ def generate_wait_words_list(
         List of indices indicating how many source words to wait for each target word
 
     Example:
-        >>> source_seg_len = [10, 5, 3, 4, 2]  # 5 source words
-        >>> target_seg_len = [4, 3, 5]  # 3 target words
+        >>> source_seg_len = [10, 5, 3, 4, 2]
+        >>> target_seg_len = [4, 3, 5]
         >>> wait_k = 2
         >>> generate_wait_words_list(source_seg_len, target_seg_len, wait_k)
-        [2, 3, 4]  # Wait for 2, 3, 4 source words respectively
+        [2, 3, 4]
     """
     wait_tokens_list = []
     source_word_total = len(source_seg_len)
@@ -106,39 +102,28 @@ def create_streaming_attention_mask(
     Reference: Based on StreamingLLM's generate_attention_mask in
                models/Qwen2_5/qwen_streaming.py:711-752
     """
-    # Start with upper triangular (causal) mask
-    # 1 in upper triangle (including diagonal), 0 below
     causal_mask = mx.tri(total_len, total_len, k=0, dtype=dtype)
 
-    # Convert to attention mask format (0 = can attend, -inf = cannot attend)
-    # Invert: upper triangle should be -inf
     inf_value = -3e38
     attn_mask = (1 - causal_mask) * inf_value
 
-    # Calculate positions
     source_token_len = sum(source_seg_len)
     target_token_len = sum(target_seg_len)
     actual_total_len = source_token_len + target_token_len
 
-    # Mask out padding positions (if any)
     if actual_total_len < total_len:
         attn_mask = mx.concatenate([
             attn_mask[:actual_total_len, :],
             mx.full((total_len - actual_total_len, total_len), inf_value, dtype=dtype)
         ], axis=0)
 
-    # Apply streaming constraints for target tokens
     streaming_start = source_token_len
 
     for index, num_tokens in enumerate(target_seg_len):
-        # How many source words can this target word attend to?
         wait_words = wait_tokens_list[index]
 
-        # Calculate how many source tokens that corresponds to
         wait_tokens = sum(source_seg_len[:wait_words])
 
-        # Mask out future source tokens (tokens beyond wait_tokens)
-        # Target word cannot attend to source tokens it hasn't "waited" for
         if wait_tokens < source_token_len:
             attn_mask[
                 streaming_start:streaming_start + num_tokens,
@@ -147,8 +132,6 @@ def create_streaming_attention_mask(
 
         streaming_start += num_tokens
 
-    # Shift source attention mask in streaming part up by one
-    # This aligns the attention for the target tokens properly
     if target_token_len > 1:
         attn_mask[
             source_token_len:source_token_len + target_token_len - 1,
@@ -180,21 +163,18 @@ def segment_by_words(
     Example:
         >>> text = "Hello world, how are you?"
         >>> words, lengths = segment_by_words(text, tokenizer)
-        >>> # words: ["Hello", "world", ",", "how", "are", "you", "?"]
-        >>> # lengths: [2, 3, 1, 2, 2, 2, 1]  # example token counts
+        >>>
+        >>>
     """
-    # Split by whitespace
     words = text.split()
 
     token_lengths = []
     for i, word in enumerate(words):
-        # Add leading space for words after the first (if include_spaces)
         if i > 0 and include_spaces:
             word_with_space = " " + word
         else:
             word_with_space = word
 
-        # Tokenize and get length
         tokens = tokenizer.encode(word_with_space, add_special_tokens=False)
         token_lengths.append(len(tokens))
 
@@ -222,23 +202,21 @@ def calculate_position_ids(
         Tuple of (source_position_ids, target_position_ids)
 
     Example:
-        >>> source_seg_len = [10, 5, 3]  # 3 source words
-        >>> target_seg_len = [4, 3]  # 2 target words
-        >>> # After reading 2 source words and generating 1 target word:
+        >>> source_seg_len = [10, 5, 3]
+        >>> target_seg_len = [4, 3]
+        >>>
         >>> src_pos, tgt_pos = calculate_position_ids(
         ...     source_seg_len, target_seg_len,
         ...     current_source_words=2,
         ...     current_target_words=1,
         ...     pe_cache_length=0
         ... )
-        >>> # src_pos: [0,1,2,...,14]  # 15 total tokens (10+5)
-        >>> # tgt_pos: [0,1,2,3]  # 4 tokens for first target word
+        >>>
+        >>>
     """
-    # Source position IDs: sequential from 0
     source_token_len = sum(source_seg_len[:current_source_words])
     source_position_ids = mx.arange(source_token_len)
 
-    # Target position IDs: sequential from pe_cache_length
     target_token_len = sum(target_seg_len[:current_target_words])
     target_position_ids = mx.arange(
         pe_cache_length,
@@ -280,19 +258,15 @@ class StreamingState:
         self.max_target_words = max_target_words
         self.pe_cache_length = pe_cache_length
 
-        # State tracking
-        self.source_words_read = 0  # How many source words processed
-        self.target_words_generated = 0  # How many target words generated
-        self.is_reading = True  # Start in reading mode
+        self.source_words_read = 0
+        self.target_words_generated = 0
+        self.is_reading = True
         self.finished = False
 
-        # Lagging tracking (for metrics)
-        self.wait_lagging = []  # Track lagging for each target word
+        self.wait_lagging = []
 
     def should_read_next_source(self) -> bool:
         """Check if we should read the next source word."""
-        # Cap at len-1 to exclude the end token (last segment)
-        # Matches StreamingLLM's generation/generate.py:1171
         return (
             self.source_words_read < len(self.source_seg_len) - 1 and
             not self.finished
@@ -302,7 +276,7 @@ class StreamingState:
         """Check if we should write the next target word."""
         if self.max_target_words is not None:
             return self.target_words_generated < self.max_target_words
-        return True  # No limit
+        return True
 
     def get_source_tokens_to_read(self) -> int:
         """Get number of tokens in next source word to read."""
@@ -317,7 +291,6 @@ class StreamingState:
     def mark_target_written(self):
         """Mark current target word as written."""
         self.target_words_generated += 1
-        # Record lagging (how many source words we've waited for)
         self.wait_lagging.append(self.source_words_read)
 
     def switch_to_writing(self):
@@ -335,8 +308,6 @@ class StreamingState:
         Returns:
             True if we have waited for enough source words
         """
-        # Cap at len-1 to exclude the end token from wait-k calculation
-        # Matches StreamingLLM's generation/generate.py:1171
         required_source_words = min(
             self.wait_k + self.target_words_generated,
             len(self.source_seg_len) - 1

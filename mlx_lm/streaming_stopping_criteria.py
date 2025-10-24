@@ -1,5 +1,3 @@
-# Copyright © 2023-2024 Apple Inc.
-# Stopping criteria for streaming generation
 
 from typing import Optional, List, Tuple
 import mlx.core as mx
@@ -75,49 +73,36 @@ class WordBoundaryStoppingCriteria:
         should_stop = False
         remove_last_token = False
 
-        # Need at least one token
         if token_count == 0:
             return should_stop, remove_last_token
 
-        # Decode tokens to text
-        # Handle both 1D and 2D arrays
         if len(generated_ids.shape) == 2:
             token_ids = generated_ids[0]
         else:
             token_ids = generated_ids
 
-        # Convert MLX array to Python list for tokenizer
         token_list = token_ids.tolist()
 
-        # Decode all generated tokens
         full_text = self.tokenizer.decode(token_list)
 
-        # Decode just the last token
         if len(token_list) > 0:
             last_token_text = self.tokenizer.decode([token_list[-1]])
         else:
             last_token_text = ""
 
-        # Check stopping conditions
 
-        # 1. Check for word boundary (space) - but skip first character
-        #    to avoid stopping on initial space
         if len(full_text) > 1 and ' ' in full_text[1:]:
             should_stop = True
-            # If we found a space, the last token likely starts the next word
             if len(token_list) >= 2:
                 remove_last_token = True
 
-        # 2. Check for terminating punctuation
         if last_token_text.strip() in self.terminating_punctuation:
             should_stop = True
 
-        # 3. Check for end instruction tokens
         for end_token in self.end_tokens:
             if end_token in last_token_text:
                 should_stop = True
 
-        # 4. Check max tokens limit
         if token_count >= self.max_tokens_per_word:
             should_stop = True
 
@@ -211,6 +196,5 @@ class CombinedStoppingCriteria:
                 if criterion(**kwargs):
                     return True
             except TypeError:
-                # Criterion doesn't accept these kwargs, skip it
                 continue
         return False

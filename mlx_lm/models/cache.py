@@ -1,4 +1,3 @@
-# Copyright © 2023-2024 Apple Inc.
 
 import copy
 from typing import Any, Dict, List, Optional
@@ -144,7 +143,6 @@ class _BaseCache:
 
     @classmethod
     def from_state(cls, state, meta_state):
-        # Create an instance of cls without calling __init__
         obj = cls.__new__(cls)
         obj.state = state
         obj.meta_state = meta_state
@@ -395,14 +393,10 @@ class RotatingKVCache(_BaseCache):
             self.keys = keys
             self.values = values
         else:
-            # Put the keys/values in temporal order to
-            # preserve context
             self.keys = self._temporal_order(self.keys)
             self.values = self._temporal_order(self.values)
             self._idx = self.keys.shape[2]
 
-            # The largest size is self.max_size + S - 1 to ensure
-            # every token gets at least self.max_size context
             trim_size = self._idx - self.max_size + 1
             self.keys = self._trim(trim_size, self.keys, keys)
             self.values = self._trim(trim_size, self.values, values)
@@ -411,8 +405,6 @@ class RotatingKVCache(_BaseCache):
         return self.keys, self.values
 
     def _update_in_place(self, keys, values):
-        # May not have hit the max size yet, so potentially
-        # keep growing the cache
         B, n_kv_heads, S, k_head_dim = keys.shape
         prev = self.offset
         if self.keys is None or (
@@ -431,24 +423,20 @@ class RotatingKVCache(_BaseCache):
                 self.keys, self.values = new_k, new_v
             self._idx = prev
 
-        # Trim if needed
         trim_size = self.keys.shape[2] - self.max_size
         if trim_size > 0:
             self.keys = self._trim(trim_size, self.keys)
             self.values = self._trim(trim_size, self.values)
             self._idx = self.max_size
 
-        # Rotate
         if self._idx == self.max_size:
             self._idx = self.keep
 
-        # Assign
         self.keys[..., self._idx : self._idx + S, :] = keys
         self.values[..., self._idx : self._idx + S, :] = values
         self.offset += S
         self._idx += S
 
-        # If the buffer is not full, slice off the end
         if self.offset < self.max_size:
             return self.keys[..., : self.offset, :], self.values[..., : self.offset, :]
         return self.keys, self.values
@@ -505,7 +493,6 @@ class RotatingKVCache(_BaseCache):
         else:
             if window_size is None:
                 return None
-            # May need a mask for when window_size < max_size
             if self.offset >= window_size and self.max_size > window_size:
                 idx = self._idx
                 if idx >= self.max_size:
@@ -571,7 +558,6 @@ class ChunkedKVCache(KVCache):
         self.start_position = 0
 
     def maybe_trim_front(self):
-        # Maintain the cache below the chunk size
         if self.keys is not None and self.keys.shape[2] >= self.chunk_size:
             self.start_position += self.keys.shape[2] - self.chunk_size
             self.keys = self.keys[..., -self.chunk_size :, :]
@@ -748,7 +734,6 @@ class BatchKVCache(_BaseCache):
         self.offset = self.offset[batch_indices]
         self.left_padding = self.left_padding[batch_indices]
 
-        # Shift left to reduce padding
         min_left_pad = self.left_padding.min().item()
         if min_left_pad > 0:
             self.keys = self.keys[..., min_left_pad:, :]
@@ -763,8 +748,6 @@ class BatchKVCache(_BaseCache):
         max_idx = max(self._idx, other._idx)
         max_size = max(self.keys.shape[2], other.keys.shape[2])
 
-        # Pad the keys and values so they are right-justified
-        # with the index and the same size
         def pad(c):
             left = max_idx - c._idx
             right = max_size - c.keys.shape[2] - left
@@ -823,17 +806,12 @@ class BatchRotatingKVCache(_BaseCache):
             self.keys = keys
             self.values = values
         else:
-            # Put the keys/values in temporal order to
-            # preserve context
             self._temporal_order()
 
-            # Slice off the end if needed
             if self.keys.shape[2] > self._idx:
                 self.keys = self.keys[..., : self._idx, :]
                 self.values = self.values[..., : self._idx, :]
 
-            # The largest size is self.max_size + S - 1 to ensure
-            # every token gets at least self.max_size context
             trim_size = self._idx - self.max_size + 1
             if trim_size > 0:
                 self.left_padding -= trim_size
@@ -845,8 +823,6 @@ class BatchRotatingKVCache(_BaseCache):
         return self.keys, self.values
 
     def _update_in_place(self, keys, values):
-        # May not have hit the max size yet, so potentially
-        # keep growing the cache
         B, n_kv_heads, S, k_head_dim = keys.shape
         prev = self._offset
         if self.keys is None or (
@@ -865,7 +841,6 @@ class BatchRotatingKVCache(_BaseCache):
                 self.keys, self.values = new_k, new_v
             self._idx = prev
 
-        # Trim if needed
         trim_size = self.keys.shape[2] - self.max_size
         if trim_size > 0:
             self.keys = self._trim(trim_size, self.keys)
@@ -873,21 +848,18 @@ class BatchRotatingKVCache(_BaseCache):
             self._idx = self.max_size
             self.left_padding -= trim_size
 
-        # Rotate
         if self._idx == self.max_size:
             self.rotated = True
             self._idx = 0
         if self.rotated:
             self.left_padding -= S
 
-        # Assign
         self.keys[..., self._idx : self._idx + S, :] = keys
         self.values[..., self._idx : self._idx + S, :] = values
         self._offset += S
         self.offset += S
         self._idx += S
 
-        # If the buffer is not full, slice off the end
         if self._offset < self.max_size:
             return (
                 self.keys[..., : self._offset, :],

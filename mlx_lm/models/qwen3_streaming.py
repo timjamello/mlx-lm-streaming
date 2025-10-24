@@ -1,5 +1,3 @@
-# Copyright © 2023-2024 Apple Inc.
-# Streaming variant of Qwen3 for StreamingLLM
 
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
@@ -82,7 +80,6 @@ class StreamingAttention(nn.Module):
 
         queries, keys, values = self.q_proj(x), self.k_proj(x), self.v_proj(x)
 
-        # Apply Q/K normalization (Qwen3-specific)
         queries = self.q_norm(queries.reshape(B, L, self.n_heads, -1)).transpose(
             0, 2, 1, 3
         )
@@ -92,7 +89,6 @@ class StreamingAttention(nn.Module):
         values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
 
         if cache is not None:
-            # Determine offset/position for RoPE
             if position_ids is not None:
                 offset = int(position_ids.flatten()[0])
             else:
@@ -101,29 +97,21 @@ class StreamingAttention(nn.Module):
                 else:
                     offset = cache.offset
 
-            # Apply RoPE with computed offset
             queries = self.rope(queries, offset=offset)
             keys = self.rope(keys, offset=offset)
 
-            # Route to appropriate cache based on mode
             if isinstance(cache, DualStreamingCache):
                 if is_reading:
-                    # Reading phase: update source cache ONLY
                     keys, values = cache.update_source(keys, values)
                 else:
-                    # Writing phase: update target cache
                     cache.update_target(keys, values)
 
-                    # *** FIX: Merge caches for attention ***
                     cache.merge_source_target()
                     keys, values = cache.get_merged()
 
-                    # NOTE: We'll separate after attention in the model's __call__
             else:
-                # Standard cache (non-streaming mode)
                 keys, values = cache.update_and_fetch(keys, values)
         else:
-            # No cache - standard attention
             queries = self.rope(queries)
             keys = self.rope(keys)
 
@@ -132,7 +120,6 @@ class StreamingAttention(nn.Module):
         )
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
 
-        # *** FIX: Separate caches after attention (writing phase only) ***
         if (
             cache is not None
             and isinstance(cache, DualStreamingCache)
@@ -249,13 +236,10 @@ class Qwen3ModelStreaming(nn.Module):
         if cache is None:
             cache = [None] * len(self.layers)
 
-        # Only use causal mask during READ mode
-        # During WRITE mode, mask = None to allow full attention to source tokens
-        # Matches StreamingLLM's qwen_streaming.py:879 where causal_mask = None
         if is_reading:
             mask = create_attention_mask(h, cache[0])
         else:
-            mask = None  # No mask during generation = attend to all tokens
+            mask = None
 
         for layer, c in zip(self.layers, cache):
             h = layer(h, mask, c, position_ids, is_reading)
