@@ -16,10 +16,12 @@ import shutil
 from mlx_lm import load, stream_generate
 
 # Simulated stream of diarized speaker segments
-LONG_PARAGRAPH = """La lumière du matin baignait le petit village d'une douceur paisible ; les volets s'ouvraient lentement, dévoilant des rues pavées encore humides de la rosée. Un chat traversa la place principale, poursuivi par le chant lointain d'un coq, tandis que l'odeur du pain frais s'échappait de la boulangerie. Les habitants, souriants et pressés à la fois, se saluaient en partageant des nouvelles simples, et le temps semblait ralentir pour permettre à chacun d'apprécier ce début de journée serein."""
+LONG_PARAGRAPH = """La lumière du matin baignait le petit village d'une douceur paisible ; les volets s'ouvraient lentement, dévoilant des rues pavées encore humides de la rosée. Un chat traversa la place principale, poursuivi par le chant lointain d'un coq, tandis que l'odeur du pain frais s'échappait de la boulangerie. Les habitants, souriants et pressés à la fois, se saluaient en partageant des nouvelles simples, et le temps semblait ralentir pour permettre à chacun d'apprécier ce début de journée serein.
+Autour de la fontaine, les premiers rayons du soleil faisaient miroiter des éclats d'or sur la pierre musquée, et quelques pigeons picoraient les miettes laissées par la veille. Une vieille femme, coiffée d'un fichu à motifs fanés, disposait avec soin des pots de fleurs sur son balcon ; les géraniums rouges contrastaient vivement avec le crépi pâle des maisons. Plus loin, le bruit régulier d'une charrette chargée de foin annonçait l'arrivée d'un paysan qui salua d'un signe de tête le boulanger en passant. Les enfants, encore ensommeillés, traînaient des pas traînants en tenant fermement la main d'un parent, leurs cartables balançant doucement au rythme de leurs pas.
+L'air, frais et parfumé, portait aussi des notes subtiles de lavande provenant d'un jardin voisin et le parfum âpre du café moulu s'échappait de certaines fenêtres entrebâillées. Sur le trottoir, un café ouvrait ses portes ; deux tables déjà occupées offraient un spectacle vivant : un couple discutait à voix basse, une femme feuilletait le journal tandis qu'un vieil homme sirotait son espresso en observant tranquillement le va-et-vient des passants. Les conversations, ponctuées de rires discrets, racontaient des histoires qui n'avaient d'importance que pour ceux qui les partageaient — la récolte prometteuse dans le champ au bout du chemin, l'arrivée d'un nouveau-né chez le fromager, la réparation prévue du toit de la mairie."""
 
 # System prompt for Juno
-JUNO_SYSTEM_PROMPT = """Translate the following from French to English. Do not do anything else."""
+JUNO_SYSTEM_PROMPT = """Translate the following from French to English. Do not do anything else. Do not add commentary."""
 
 
 def live_streaming_visualization(model, tokenizer, source_text, wait_k=50):
@@ -111,7 +113,7 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=50):
         # Check if output stream needs update
         if hasattr(response, "word_complete") and response.word_complete:
             output_words.append(response.text)
-            current_output_text = " ".join(output_words)
+            current_output_text = "".join(output_words)  # Concatenate without spaces - tokenizer already includes them
             needs_redraw = True
 
         if needs_redraw:
@@ -150,7 +152,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="mlx-community/Qwen3-VL-32B-Instruct-4bit",
+        default="mlx-community/Qwen3-4B-Instruct-2507-4bit",
         help="Model path",
     )
     parser.add_argument(

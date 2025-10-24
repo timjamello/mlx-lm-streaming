@@ -64,7 +64,7 @@ def stream_generate_streaming(
     max_tokens: int = 1024,
     assistant_start_tokens: Optional[mx.array] = None,
     pe_cache_length: int = 0,
-    split_mode: str = "word",
+    split_mode: str = "sentence",
     end_token: str = "<|im_end|>",
     temp: float = 0.0,
     top_p: float = 1.0,
@@ -180,6 +180,7 @@ def stream_generate_streaming(
     all_target_tokens = []
     current_word_tokens = []
     total_tokens_generated = 0
+    mask_eos_next_token = False
 
     if assistant_start_tokens is not None:
         next_input = assistant_start_tokens
@@ -276,6 +277,11 @@ def stream_generate_streaming(
                             logits, context, repetition_penalty
                         )
 
+                # Mask EOS token only for the next token after reading new source
+                if mask_eos_next_token:
+                    logits[:, tokenizer.eos_token_id] = float('-inf')
+                    mask_eos_next_token = False
+
                 next_token = sampler(logits)
                 token_count += 1
                 total_tokens_generated += 1
@@ -285,6 +291,7 @@ def stream_generate_streaming(
                 is_eos = eos_criteria(int(next_token[0]))
                 if is_eos:
                     if state.should_read_next_source():
+                        # Suppress EOS - there's more source to read
                         current_word_tokens.pop()
                         for cache in caches:
                             if isinstance(cache, DualStreamingCache):
@@ -294,7 +301,7 @@ def stream_generate_streaming(
                             all_target_tokens.extend(current_word_tokens)
                             word_text = tokenizer.decode(current_word_tokens)
                             state.mark_target_written()
-                            
+
                             yield {
                                 "text": word_text,
                                 "token_ids": current_word_tokens.copy(),
@@ -305,12 +312,54 @@ def stream_generate_streaming(
                                 "word_complete": True,
                             }
 
-                        last_token = mx.array([[current_word_tokens[-1]]]) if len(current_word_tokens) > 0 else assistant_start_tokens
-                        if len(current_word_tokens) <= 0:
+                        last_token = mx.array([[all_target_tokens[-1]]]) if len(all_target_tokens) > 0 else assistant_start_tokens
+                        if len(all_target_tokens) <= 0:
                             time.sleep(0.1)
                         next_input = last_token
 
-                        state.switch_to_reading()
+                        # Read next wait-k words (or all remaining if fewer) to give model more context
+                        words_to_read = min(wait_k, len(state.source_seg_len) - state.source_words_read)
+                        for _ in range(words_to_read):
+                            if not state.should_read_next_source():
+                                break
+
+                            tokens_to_read = state.get_source_tokens_to_read()
+                            if tokens_to_read == 0:
+                                state.mark_source_read()
+                                continue
+
+                            source_chunk = source_token_ids[
+                                :, source_pos_offset : source_pos_offset + tokens_to_read
+                            ]
+
+                            if source_chunk.shape[1] == 0:
+                                state.mark_source_read()
+                                continue
+
+                            position_ids = mx.arange(
+                                source_pos_offset, source_pos_offset + tokens_to_read
+                            ).reshape(1, -1)
+
+                            _ = model(
+                                source_chunk, cache=caches, position_ids=position_ids, is_reading=True
+                            )
+
+                            source_pos_offset += tokens_to_read
+                            state.mark_source_read()
+
+                            yield {
+                                "text": "",
+                                "token_ids": [],
+                                "is_final": False,
+                                "source_words_read": state.source_words_read,
+                                "target_words_generated": state.target_words_generated,
+                                "mode": "read",
+                                "word_complete": False,
+                            }
+
+                        # Set flag to mask EOS for the next token after reading new source
+                        mask_eos_next_token = True
+                        state.switch_to_writing()
                         current_word_tokens = []
                         break
                     else:
