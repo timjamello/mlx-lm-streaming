@@ -25,7 +25,7 @@ class WordBoundaryStoppingCriteria:
     def __init__(
         self,
         tokenizer,
-        max_tokens_per_word: int = 50,
+        max_tokens_per_word: int = 5,
         end_tokens: Optional[List[str]] = None,
         terminating_punctuation: Optional[List[str]] = None
     ):

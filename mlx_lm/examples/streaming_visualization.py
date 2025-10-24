@@ -1,33 +1,99 @@
 #!/usr/bin/env python3
 """
-StreamingLLM Live Visualization Example
+StreamingLLM Live Visualization Example - Juno Conversational Assistant
 
-This example demonstrates live streaming visualization matching StreamingLLM's
-evaluate/streaming_eval.py pattern. It shows:
-1. Source text streaming in live as the LLM reads it
-2. Target text streaming out underneath as the LLM generates it
-
-The visualization updates both streams in real-time, showing the actual
-streaming behavior of the wait-k policy.
+This example demonstrates a streaming conversational assistant (Juno) that:
+1. Continuously processes a stream of diarized speaker segments
+2. Uses LLM semantic understanding to determine when to speak
+3. Can be interrupted and adapts to the conversation flow
+4. Doesn't require wake words - always listening and processing
 """
 
 import sys
 
 from mlx_lm import load_streaming, stream_generate_streaming_llm
 
-# Long paragraph for translation (matches StreamingLLM examples)
+# Simulated stream of diarized speaker segments
 LONG_PARAGRAPH = """
-The quick brown fox jumps over the lazy dog. This pangram contains every letter
-of the English alphabet at least once. It has been used for testing typewriters
-and computer keyboards for many years. The phrase is also commonly used to
-demonstrate fonts and typography. In the digital age, it remains a useful tool
-for designers and developers who need to see how different characters appear
-together. The sentence's simplicity and memorability have made it an enduring
-classic in the world of typography and text processing.
+[Bob]: Hey Alice, how was your weekend? Did you manage to go to that new restaurant?
+[Alice]: Oh, it was great! Yes, we finally went to that Japanese place downtown. The sushi was incredible.
+[Bob]: That sounds amazing. I've been meaning to try it. What did you order?
+[Alice]: We had the omakase menu. The chef's selection was really impressive.
+[Bob]: Juno, can you tell us about omakase dining?
+[Alice]: Yes, I'm curious too. What makes it special?
+[Bob]: And maybe recommend some dishes we should try if we're new to Japanese cuisine?
+[Alice]: That would be helpful. My friend is visiting next week and I'd love to take them somewhere nice.
+[Bob]: Juno, also could you suggest some good Japanese restaurants in the downtown area?
+[Alice]: Oh, and while you're at it, can you explain the difference between sushi and sashimi?
+[Bob]: Right, I always get confused about that.
+[Alice]: Me too! And what about wasabi etiquette? I never know how much to use.
+[Bob]: Juno, are you there? We'd love your input on Japanese dining.
+[Alice]: Maybe she's processing all our questions. We did ask a lot at once!
+[Bob]: True. Juno, just start with whatever you think is most important about omakase.
+[Alice]: Yes, take your time. We're listening.
 """
 
+# System prompt for Juno
+JUNO_SYSTEM_PROMPT = """You are Juno, an AI assistant. You are NOT participating in the conversation—you are OBSERVING a live conversation between other people (like Bob and Alice).
 
-def live_streaming_visualization(model, tokenizer, source_text, wait_k=3):
+## Critical Rules:
+1. You are LISTENING to a conversation, not part of it
+2. You will see messages in the format [Speaker]: text
+3. You are ONLY "Juno" - you are NOT Bob, NOT Alice, NOT any other speaker
+4. DO NOT respond or speak unless someone is clearly addressing you (Juno) and not someone else
+5. When processing conversation, note who is speaking, but do NOT speak for them
+
+## When Someone Addresses You:
+- Look for phrases like "[Bob]: Juno, can you..." or "[Alice]: Hey Juno..."
+- Only THEN should you call the `speak` tool and respond
+- Respond as Juno, the AI assistant who has been listening
+- Do not echo the conversation while observing - your thoughts should be your own
+- Be mindful of interruptions - someone may ask you something, then change the conversation. When this happens, you should stop talking.
+
+## Examples of When NOT to Speak:
+- "[Bob]: Hey Alice, how was your weekend?" ← Bob is talking to Alice, not you
+- "[Alice]: It was great!" ← Alice is responding to Bob, not you
+- "[Bob]: What did you order?" ← Bob is asking Alice, not you
+
+## Examples of When TO Speak:
+- "[Bob]: Juno, can you tell us about omakase?" ← Bob is directly asking you
+- "[Alice]: Hey Juno, what do you think?" ← Alice wants your input
+
+## Tools Available:
+<tools>
+speak: Begin speaking (only when addressed!)
+stop_speaking: Stop speaking
+</tools>
+
+To call: <tool_call>{"name": "function_name"}</tool_call>
+
+## Response Protocol:
+1. When addressed, call: <tool_call>{"name": "speak", "arguments": {}}</tool_call>
+2. Generate your response (ONE complete thought)
+3. IMMEDIATELY call: <tool_call>{"name": "stop_speaking", "arguments": {}}</tool_call>
+4. DO NOT continue the conversation for others
+5. DO NOT generate [Speaker]: tags for other participants
+
+## Prohibited Behaviors:
+- ❌ Generating speech for Bob, Alice, or other participants
+- ❌ Writing [Bob]: or [Alice]: in your output
+- ❌ Continuing past your answer to imagine their responses
+- ❌ Forgetting to call stop_speaking
+
+Example Correct Response:
+<tool_call>{"name": "speak"}</tool_call>
+Omakase is a Japanese dining experience where...
+<tool_call>{"name": "stop_speaking"}</tool_call>
+
+Example WRONG Response:
+<tool_call>{"name": "speak"}</tool_call>
+Omakase is a Japanese dining experience where...
+[Bob]: Thanks Juno! ← NEVER DO THIS
+
+Remember: You are an OBSERVER until addressed."""
+
+
+def live_streaming_visualization(model, tokenizer, source_text, wait_k=50):
     """
     Live visualization showing input stream and output stream separately.
 
@@ -100,25 +166,25 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=3):
     sys.stdout.write("\033[s")  # Save cursor position
 
     # Reserve space for the display
-    print("streaming-input:")
+    print("conversation-stream (incoming):")
     print()  # Reserve multiple lines for input
     print()  # Separator
-    print("streaming-output:")
+    print("juno-response:")
     print()  # Reserve multiple lines for output
     print()  # Extra space
 
     # Move back to saved position
     sys.stdout.write("\033[u")  # Restore cursor position
 
-    # Stream generation
+    # Stream generation - Juno processing conversation
     for response in stream_generate_streaming_llm(
         model=model,
         tokenizer=tokenizer,
-        prompt=source_text,  # Just the source text, no instruction
+        prompt=source_text,  # The diarized speaker stream
         wait_k=wait_k,
         max_new_words=2000,
-        system_prompt="Translate the following English paragraph to French and do nothing else. Do not do anything except for translating. Do not add commentary",
-        temp=0.3,  # Greedy for consistency
+        system_prompt=JUNO_SYSTEM_PROMPT,
+        temp=0.5,  # More natural conversation
         top_p=0.8,
     ):
         # Update displays by completely redrawing the display area
@@ -146,10 +212,10 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=3):
             sys.stdout.write("\033[J")  # Clear from cursor to end of screen
 
             # Redraw the display
-            print("streaming-input:")
+            print("conversation-stream (incoming):")
             print(current_input_text if current_input_text else "")
             print()  # Separator
-            print("streaming-output:")
+            print("juno-response (when speaking):")
             print(current_output_text if current_output_text else "")
 
             sys.stdout.flush()
@@ -185,10 +251,10 @@ def simple_streaming_visualization(model, tokenizer, source_text, wait_k=3):
 
     source_words = source_text.strip().split()
 
-    print("streaming-input:")
+    print("conversation-stream (incoming):")
     displayed_input_words = []
 
-    print("\nstreaming-output:")
+    print("\njuno-response (when speaking):")
     output_words = []
 
     last_source_read = 0
@@ -196,11 +262,11 @@ def simple_streaming_visualization(model, tokenizer, source_text, wait_k=3):
     for response in stream_generate_streaming_llm(
         model=model,
         tokenizer=tokenizer,
-        prompt=source_text,  # Just the source text
+        prompt=source_text,  # The diarized speaker stream
         wait_k=wait_k,
-        max_new_words=200,
-        system_prompt="Translate all following English to French",
-        temp=0.0,
+        max_new_words=500,
+        system_prompt=JUNO_SYSTEM_PROMPT,
+        temp=0.7,
     ):
         # Show source words as they're read
         if (
@@ -228,27 +294,27 @@ def simple_streaming_visualization(model, tokenizer, source_text, wait_k=3):
 
 def side_by_side_visualization(model, tokenizer, source_text, wait_k=3):
     """
-    Side-by-side visualization showing source and target word alignment.
+    Side-by-side visualization showing conversation stream and Juno's response.
 
     Shows:
-    - Which source words have been read
-    - Which target words have been generated
-    - Current lag between source and target
+    - Which conversation segments have been processed
+    - Which response words Juno has generated
+    - Current lag between input and output
 
     Args:
         model: The language model
         tokenizer: The tokenizer
-        source_text: Source text to process
+        source_text: Conversation stream text
         wait_k: Wait-k policy parameter
     """
     print("=" * 80)
-    print(f"SIDE-BY-SIDE ALIGNMENT VISUALIZATION (wait-k={wait_k})")
+    print(f"CONVERSATION STREAM vs JUNO RESPONSE (wait-k={wait_k})")
     print("=" * 80)
     print()
 
     source_words = source_text.strip().split()
 
-    print(f"{'Source (Read)':<40} | {'Target (Generated)':<40}")
+    print(f"{'Conversation Stream (Read)':<40} | {'Juno Response (Generated)':<40}")
     print("-" * 80)
 
     source_display = []
@@ -259,11 +325,11 @@ def side_by_side_visualization(model, tokenizer, source_text, wait_k=3):
     for response in stream_generate_streaming_llm(
         model=model,
         tokenizer=tokenizer,
-        prompt=source_text,  # Just the source text
+        prompt=source_text,  # The diarized speaker stream
         wait_k=wait_k,
-        max_new_words=200,
-        system_prompt="Translate the following English paragraph to French",
-        temp=0.0,
+        max_new_words=500,
+        system_prompt=JUNO_SYSTEM_PROMPT,
+        temp=0.7,
     ):
         # Update source display
         if (
@@ -296,11 +362,11 @@ def side_by_side_visualization(model, tokenizer, source_text, wait_k=3):
     print()
     print()
     print("=" * 80)
-    print(f"Full source: {' '.join(source_words[:last_source_read])}")
+    print(f"Conversation processed: {' '.join(source_words[:last_source_read])}")
     print()
-    print(f"Full target: {' '.join(target_display)}")
+    print(f"Juno's response: {' '.join(target_display)}")
     print()
-    print(f"Lag: {last_source_read - len(target_display)} words")
+    print(f"Processing lag: {last_source_read - len(target_display)} words")
     print("=" * 80)
 
 
@@ -338,11 +404,11 @@ def word_by_word_trace(model, tokenizer, source_text, wait_k=3):
     for response in stream_generate_streaming_llm(
         model=model,
         tokenizer=tokenizer,
-        prompt=source_text,  # Just the source text
+        prompt=source_text,  # The diarized speaker stream
         wait_k=wait_k,
-        max_new_words=200,
-        system_prompt="Translate the following English paragraph to French",
-        temp=0.0,
+        max_new_words=500,
+        system_prompt=JUNO_SYSTEM_PROMPT,
+        temp=0.7,
     ):
         if hasattr(response, "word_complete") and response.word_complete:
             step += 1
@@ -376,7 +442,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
+        default="mlx-community/Qwen3-30B-A3B-Instruct-2507-5bit",
         help="Model path",
     )
     parser.add_argument(

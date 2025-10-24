@@ -97,6 +97,14 @@ class DualStreamingCache(_BaseCache):
             )
         return self.target_cache.update_and_fetch(keys, values)
 
+    def pop_target(self):
+        """Remove the last target token from cache."""
+        if self.target_cache.offset > 0:
+            self.target_cache.offset -= 1
+            if self.target_cache.keys is not None and self.target_cache.keys.shape[2] > 0:
+                self.target_cache.keys = self.target_cache.keys[..., :-1, :]
+                self.target_cache.values = self.target_cache.values[..., :-1, :]
+
     def merge_source_target(self):
         """
         Merge source and target caches for attention computation.

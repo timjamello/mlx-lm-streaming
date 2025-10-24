@@ -139,7 +139,7 @@ def stream_generate_streaming(
 
     # Initialize stopping criteria
     word_boundary_criteria = WordBoundaryStoppingCriteria(
-        tokenizer=tokenizer, max_tokens_per_word=50, end_tokens=[end_token]
+        tokenizer=tokenizer, max_tokens_per_word=5, end_tokens=[end_token]
     )
 
     max_length_criteria = MaxLengthStoppingCriteria(max_length=max_tokens)
@@ -295,11 +295,33 @@ def stream_generate_streaming(
                 is_eos = eos_criteria(int(next_token[0]))
                 if is_eos:
                     if state.should_read_next_source():
-                        logits[0, tokenizer.eos_token_id] = float("-inf")
                         current_word_tokens.pop()
-                        next_token = sampler(logits)
-                        current_word_tokens.append(int(next_token[0]))
-                        word_finished = True
+                        for cache in caches:
+                            if isinstance(cache, DualStreamingCache):
+                                cache.pop_target()
+
+                        if len(current_word_tokens) > 0:
+                            all_target_tokens.extend(current_word_tokens)
+                            word_text = tokenizer.decode(current_word_tokens)
+                            state.mark_target_written()
+                            
+                            yield {
+                                "text": word_text,
+                                "token_ids": current_word_tokens.copy(),
+                                "is_final": False,
+                                "source_words_read": state.source_words_read,
+                                "target_words_generated": state.target_words_generated,
+                                "mode": "write",
+                                "word_complete": True,
+                            }
+
+                        last_token = mx.array([[current_word_tokens[-1]]]) if len(current_word_tokens) > 0 else assistant_start_tokens
+                        next_input = last_token
+
+                        # 4. Switch to reading mode to get more context
+                        state.switch_to_reading()
+                        current_word_tokens = []
+                        break  # Exit write loop, re-enter main loop in read mode
                     else:
                         # EOS detected - stop everything immediately
                         # Remove the EOS token from output (don't show it to user)
