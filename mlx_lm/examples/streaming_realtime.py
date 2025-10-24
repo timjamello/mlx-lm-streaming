@@ -9,7 +9,7 @@ simultaneous translation or live transcription scenarios.
 import sys
 import time
 
-from mlx_lm import load_streaming, stream_generate_streaming_llm
+from mlx_lm import load, stream_generate
 
 
 def realtime_streaming_demo(model, tokenizer, source_text, wait_k=3, delay=0.5):
@@ -35,7 +35,7 @@ def realtime_streaming_demo(model, tokenizer, source_text, wait_k=3, delay=0.5):
     start_time = time.time()
     word_count = 0
 
-    for response in stream_generate_streaming_llm(
+    for response in stream_generate(
         model=model,
         tokenizer=tokenizer,
         prompt=source_text,
@@ -91,7 +91,7 @@ def interactive_mode(model, tokenizer):
             print(f"\nStreaming output (wait-k={wait_k}):")
             print("-" * 80)
 
-            for response in stream_generate_streaming_llm(
+            for response in stream_generate(
                 model=model,
                 tokenizer=tokenizer,
                 prompt=prompt,
@@ -142,7 +142,7 @@ def main():
     args = parser.parse_args()
 
     print(f"Loading model: {args.model}")
-    model, tokenizer = load_streaming(args.model)
+    model, tokenizer = load(args.model)
     print("Model loaded successfully!\n")
 
     if args.interactive:

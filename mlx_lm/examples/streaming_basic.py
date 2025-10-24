@@ -7,14 +7,14 @@ The model processes source text incrementally and generates output with a
 configurable lag.
 """
 
-from mlx_lm import load_streaming, stream_generate_streaming_llm
+from mlx_lm import load, stream_generate
 
 
 def main():
     # Load a Qwen2.5 model (or any compatible streaming model)
     print("Loading model...")
     model_path = "Qwen/Qwen2.5-0.5B-Instruct"
-    model, tokenizer = load_streaming(model_path)
+    model, tokenizer = load(model_path)
 
     # Example prompt
     prompt = "Translate the following to French: Hello, how are you doing today?"
@@ -25,7 +25,7 @@ def main():
 
     # Generate with streaming
     words = []
-    for response in stream_generate_streaming_llm(
+    for response in stream_generate(
         model=model,
         tokenizer=tokenizer,
         prompt=prompt,

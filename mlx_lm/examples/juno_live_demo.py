@@ -232,14 +232,14 @@ def llm_process(
     logger.info("LLM Process starting...")
 
     try:
-        from mlx_lm import load_streaming
+        from mlx_lm import load
         from mlx_lm.streaming_data_utils import prepare_streaming_input
         from mlx_lm.streaming_generate import stream_generate_streaming
         import mlx.core as mx
 
         # Load model
         logger.info(f"Loading model: {model_path}")
-        model, tokenizer = load_streaming(model_path)
+        model, tokenizer = load(model_path)
         logger.info("Model loaded successfully")
 
         # System prompt

@@ -194,13 +194,13 @@ mlx_lm generate \
 ### Basic API Usage
 
 ```python
-from mlx_lm import load, stream_generate_streaming_llm
+from mlx_lm import load, stream_generate
 
 # Load model
 model, tokenizer = load("Qwen/Qwen2.5-0.5B-Instruct")
 
 # Stream generation
-for response in stream_generate_streaming_llm(
+for response in stream_generate(
     model=model,
     tokenizer=tokenizer,
     prompt="Translate to French: Hello, how are you?",
@@ -215,7 +215,7 @@ for response in stream_generate_streaming_llm(
 ### Accessing Metadata
 
 ```python
-for response in stream_generate_streaming_llm(...):
+for response in stream_generate(...):
     if response.word_complete:
         print(f"Word: {response.text}")
         print(f"  Source words read: {response.source_words_read}")

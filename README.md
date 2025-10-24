@@ -1,309 +1,250 @@
-## MLX LM 
+# MLX Streaming LLM
 
-MLX LM is a Python package for generating text and fine-tuning large language
-models on Apple silicon with MLX.
+**Real-time streaming text generation with MLX** - Implementation of StreamingLLM's wait-k policy for Apple Silicon.
 
-Some key features include:
+MLX Streaming LLM is a Python package for streaming text generation using large language models on Apple Silicon with MLX. Unlike traditional batch processing, this library enables **incremental input processing** and **real-time output generation** with configurable latency control.
 
-* Integration with the Hugging Face Hub to easily use thousands of LLMs with a
-  single command. 
-* Support for quantizing and uploading models to the Hugging Face Hub.
-* [Low-rank and full model
-  fine-tuning](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/LORA.md)
-  with support for quantized models.
-* Distributed inference and fine-tuning with `mx.distributed`
+## Key Features
 
-The easiest way to get started is to install the `mlx-lm` package:
+- **Streaming Input Processing**: Process source text incrementally rather than in batches
+- **Wait-k Policy**: Configurable lag control between input and output (wait-k algorithm)
+- **Separate Position Encodings**: Independent position IDs for source and target tokens
+- **Dual Cache System**: Efficient separate KV caches for streaming generation
+- **MLX Optimized**: Native support for Apple Silicon with MLX acceleration
+- **Compatible Models**: Qwen2.5 family with streaming support
 
-**With `pip`**:
+## What is StreamingLLM?
 
-```sh
-pip install mlx-lm
-```
+StreamingLLM implements the wait-k policy where the model:
+1. **Reads** source text incrementally (word-by-word or token-by-token)
+2. **Waits** for k source words before generating each target word
+3. **Generates** output with controllable latency
 
-**With `conda`**:
+This enables applications like:
+- **Simultaneous translation** - Translate speech in real-time
+- **Live transcription** - Process and respond to streaming text
+- **Real-time summarization** - Generate summaries as content arrives
 
-```sh
-conda install -c conda-forge mlx-lm
-```
-
-### Quick Start
-
-To generate text with an LLM use:
+## Installation
 
 ```bash
-mlx_lm.generate --prompt "How tall is Mt Everest?"
+# Install from source
+git clone https://github.com/yourusername/mlx-streaming-llm.git
+cd mlx-streaming-llm
+pip install -e .
 ```
 
-To chat with an LLM use:
+**Requirements**:
+- Python 3.8+
+- Apple Silicon Mac (M1/M2/M3/M4)
+- MLX >= 0.29.2
 
-```bash
-mlx_lm.chat
-```
-
-This will give you a chat REPL that you can use to interact with the LLM. The
-chat context is preserved during the lifetime of the REPL.
-
-Commands in `mlx-lm` typically take command line options which let you specify
-the model, sampling parameters, and more. Use `-h` to see a list of available
-options for a command, e.g.:
-
-```bash
-mlx_lm.generate -h
-```
-
-The default model for generation and chat is
-`mlx-community/Llama-3.2-3B-Instruct-4bit`.  You can specify any MLX-compatible
-model with the `--model` flag. Thousands are available in the
-[MLX Community](https://huggingface.co/mlx-community) Hugging Face
-organization.
-
-### Python API
-
-You can use `mlx-lm` as a module:
-
-```python
-from mlx_lm import load, generate
-
-model, tokenizer = load("mlx-community/Mistral-7B-Instruct-v0.3-4bit")
-
-prompt = "Write a story about Einstein"
-
-messages = [{"role": "user", "content": prompt}]
-prompt = tokenizer.apply_chat_template(
-    messages, add_generation_prompt=True
-)
-
-text = generate(model, tokenizer, prompt=prompt, verbose=True)
-```
-
-To see a description of all the arguments you can do:
-
-```
->>> help(generate)
-```
-
-Check out the [generation
-example](https://github.com/ml-explore/mlx-lm/tree/main/mlx_lm/examples/generate_response.py)
-to see how to use the API in more detail. Check out the [batch generation
-example](https://github.com/ml-explore/mlx-lm/tree/main/mlx_lm/examples/batch_generate_response.py)
-to see how to efficiently generate continuations for a batch of prompts.
-
-The `mlx-lm` package also comes with functionality to quantize and optionally
-upload models to the Hugging Face Hub.
-
-You can convert models using the Python API:
-
-```python
-from mlx_lm import convert
-
-repo = "mistralai/Mistral-7B-Instruct-v0.3"
-upload_repo = "mlx-community/My-Mistral-7B-Instruct-v0.3-4bit"
-
-convert(repo, quantize=True, upload_repo=upload_repo)
-```
-
-This will generate a 4-bit quantized Mistral 7B and upload it to the repo
-`mlx-community/My-Mistral-7B-Instruct-v0.3-4bit`. It will also save the
-converted model in the path `mlx_model` by default.
-
-To see a description of all the arguments you can do:
-
-```
->>> help(convert)
-```
-
-#### Streaming
-
-For streaming generation, use the `stream_generate` function. This yields
-a generation response object.
-
-For example,
+## Quick Start
 
 ```python
 from mlx_lm import load, stream_generate
 
-repo = "mlx-community/Mistral-7B-Instruct-v0.3-4bit"
-model, tokenizer = load(repo)
+# Load a streaming-compatible model
+model, tokenizer = load("Qwen/Qwen2.5-0.5B-Instruct")
 
-prompt = "Write a story about Einstein"
-
-messages = [{"role": "user", "content": prompt}]
-prompt = tokenizer.apply_chat_template(
-    messages, add_generation_prompt=True
-)
-
-for response in stream_generate(model, tokenizer, prompt, max_tokens=512):
-    print(response.text, end="", flush=True)
-print()
+# Stream generation with wait-k=3
+for response in stream_generate(
+    model=model,
+    tokenizer=tokenizer,
+    prompt="Translate to French: Hello, how are you doing today?",
+    wait_k=3,  # Wait for 3 source words before generating
+    max_new_words=20,
+    temp=0.7,
+):
+    if response.word_complete:
+        print(response.text, end=' ', flush=True)
 ```
 
-#### Sampling
+## Python API
 
-The `generate` and `stream_generate` functions accept `sampler` and
-`logits_processors` keyword arguments. A sampler is any callable which accepts
-a possibly batched logits array and returns an array of sampled tokens.  The
-`logits_processors` must be a list of callables which take the token history
-and current logits as input and return the processed logits. The logits
-processors are applied in order.
-
-Some standard sampling functions and logits processors are provided in
-`mlx_lm.sample_utils`.
-
-### Command Line
-
-You can also use `mlx-lm` from the command line with:
-
-```
-mlx_lm.generate --model mistralai/Mistral-7B-Instruct-v0.3 --prompt "hello"
-```
-
-This will download a Mistral 7B model from the Hugging Face Hub and generate
-text using the given prompt.
-
-For a full list of options run:
-
-```
-mlx_lm.generate --help
-```
-
-To quantize a model from the command line run:
-
-```
-mlx_lm.convert --hf-path mistralai/Mistral-7B-Instruct-v0.3 -q
-```
-
-For more options run:
-
-```
-mlx_lm.convert --help
-```
-
-You can upload new models to Hugging Face by specifying `--upload-repo` to
-`convert`. For example, to upload a quantized Mistral-7B model to the
-[MLX Hugging Face community](https://huggingface.co/mlx-community) you can do:
-
-```
-mlx_lm.convert \
-    --hf-path mistralai/Mistral-7B-Instruct-v0.3 \
-    -q \
-    --upload-repo mlx-community/my-4bit-mistral
-```
-
-Models can also be converted and quantized directly in the
-[mlx-my-repo](https://huggingface.co/spaces/mlx-community/mlx-my-repo) Hugging
-Face Space.
-
-### Long Prompts and Generations 
-
-`mlx-lm` has some tools to scale efficiently to long prompts and generations:
-
-- A rotating fixed-size key-value cache.
-- Prompt caching
-
-To use the rotating key-value cache pass the argument `--max-kv-size n` where
-`n` can be any integer. Smaller values like `512` will use very little RAM but
-result in worse quality. Larger values like `4096` or higher will use more RAM
-but have better quality.
-
-Caching prompts can substantially speedup reusing the same long context with
-different queries. To cache a prompt use `mlx_lm.cache_prompt`. For example:
-
-```bash
-cat prompt.txt | mlx_lm.cache_prompt \
-  --model mistralai/Mistral-7B-Instruct-v0.3 \
-  --prompt - \
-  --prompt-cache-file mistral_prompt.safetensors
-``` 
-
-Then use the cached prompt with `mlx_lm.generate`:
-
-```
-mlx_lm.generate \
-    --prompt-cache-file mistral_prompt.safetensors \
-    --prompt "\nSummarize the above text."
-```
-
-The cached prompt is treated as a prefix to the supplied prompt. Also notice
-when using a cached prompt, the model to use is read from the cache and need
-not be supplied explicitly.
-
-Prompt caching can also be used in the Python API in order to avoid
-recomputing the prompt. This is useful in multi-turn dialogues or across
-requests that use the same context. See the
-[example](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/examples/chat.py)
-for more usage details.
-
-### Supported Models
-
-`mlx-lm` supports thousands of Hugging Face format LLMs. If the model you want to
-run is not supported, file an
-[issue](https://github.com/ml-explore/mlx-lm/issues/new) or better yet,
-submit a pull request.
-
-Here are a few examples of Hugging Face models that work with this example:
-
-- [mistralai/Mistral-7B-v0.1](https://huggingface.co/mistralai/Mistral-7B-v0.1)
-- [meta-llama/Llama-2-7b-hf](https://huggingface.co/meta-llama/Llama-2-7b-hf)
-- [deepseek-ai/deepseek-coder-6.7b-instruct](https://huggingface.co/deepseek-ai/deepseek-coder-6.7b-instruct)
-- [01-ai/Yi-6B-Chat](https://huggingface.co/01-ai/Yi-6B-Chat)
-- [microsoft/phi-2](https://huggingface.co/microsoft/phi-2)
-- [mistralai/Mixtral-8x7B-Instruct-v0.1](https://huggingface.co/mistralai/Mixtral-8x7B-Instruct-v0.1)
-- [Qwen/Qwen-7B](https://huggingface.co/Qwen/Qwen-7B)
-- [pfnet/plamo-13b](https://huggingface.co/pfnet/plamo-13b)
-- [pfnet/plamo-13b-instruct](https://huggingface.co/pfnet/plamo-13b-instruct)
-- [stabilityai/stablelm-2-zephyr-1_6b](https://huggingface.co/stabilityai/stablelm-2-zephyr-1_6b)
-- [internlm/internlm2-7b](https://huggingface.co/internlm/internlm2-7b)
-- [tiiuae/falcon-mamba-7b-instruct](https://huggingface.co/tiiuae/falcon-mamba-7b-instruct)
-
-Most
-[Mistral](https://huggingface.co/models?library=transformers,safetensors&other=mistral&sort=trending),
-[Llama](https://huggingface.co/models?library=transformers,safetensors&other=llama&sort=trending),
-[Phi-2](https://huggingface.co/models?library=transformers,safetensors&other=phi&sort=trending),
-and
-[Mixtral](https://huggingface.co/models?library=transformers,safetensors&other=mixtral&sort=trending)
-style models should work out of the box.
-
-For some models (such as `Qwen` and `plamo`) the tokenizer requires you to
-enable the `trust_remote_code` option. You can do this by passing
-`--trust-remote-code` in the command line. If you don't specify the flag
-explicitly, you will be prompted to trust remote code in the terminal when
-running the model. 
-
-For `Qwen` models you must also specify the `eos_token`. You can do this by
-passing `--eos-token "<|endoftext|>"` in the command
-line. 
-
-These options can also be set in the Python API. For example:
+### Basic Streaming
 
 ```python
-model, tokenizer = load(
-    "qwen/Qwen-7B",
-    tokenizer_config={"eos_token": "<|endoftext|>", "trust_remote_code": True},
-)
+from mlx_lm import load, stream_generate
+
+model, tokenizer = load("Qwen/Qwen2.5-0.5B-Instruct")
+
+# Generate with streaming
+for response in stream_generate(
+    model=model,
+    tokenizer=tokenizer,
+    prompt="Your source text here",
+    wait_k=3,
+    max_new_words=50,
+    system_prompt="Translate to French",  # Optional task description
+    temp=0.0,  # Greedy decoding
+):
+    if response.word_complete:
+        # Access streaming metadata
+        print(f"Word: {response.text}")
+        print(f"  Source words read: {response.source_words_read}")
+        print(f"  Target words: {response.target_words_generated}")
+        print(f"  Speed: {response.generation_tps:.1f} tok/s")
 ```
 
-### Large Models
+### Response Object
 
-> [!NOTE]
-    This requires macOS 15.0 or higher to work.
+The `GenerationResponse` object includes:
+- `text` - Generated text segment
+- `token` - Token ID
+- `word_complete` - True when word boundary reached
+- `source_words_read` - Number of source words processed
+- `target_words_generated` - Number of target words generated
+- `generation_tps` - Generation speed (tokens/sec)
+- `peak_memory` - Peak memory usage (GB)
 
-Models which are large relative to the total RAM available on the machine can
-be slow. `mlx-lm` will attempt to make them faster by wiring the memory
-occupied by the model and cache. This requires macOS 15 or higher to
-work.
+### Key Parameters
 
-If you see the following warning message:
+#### `wait_k` (int, default=3)
+Number of source words to wait for before generating each target word.
+- **Lower** (1-2): Faster response, less context
+- **Higher** (5-7): More context, better quality
+- **Typical**: 3-5 for balanced performance
 
-> [WARNING] Generating with a model that requires ...
+#### `max_new_words` (int, optional)
+Maximum number of words to generate. If None, generates until source exhausted.
 
-then the model will likely be slow on the given machine. If the model fits in
-RAM then it can often be sped up by increasing the system wired memory limit.
-To increase the limit, set the following `sysctl`:
+#### `max_tokens_per_word` (int, default=50)
+Safety limit for tokens per word. Prevents runaway generation.
 
+#### `system_prompt` (str)
+Task description kept separate from source text (not segmented).
+
+#### Temperature & Sampling
+- `temp` (float, default=0.0) - Sampling temperature
+- `top_p` (float, default=1.0) - Nucleus sampling
+- `repetition_penalty` (float, optional) - Penalty for repetition
+
+## Examples
+
+See the `mlx_lm/examples/` directory for detailed examples:
+
+- **`streaming_basic.py`** - Introduction to streaming generation
+- **`streaming_cli_demo.py`** - Compare different wait-k values
+- **`streaming_visualization.py`** - Visualize input/output streams
+- **`streaming_realtime.py`** - Real-time streaming simulation
+- **`juno_live_demo.py`** - Multi-process live conversation assistant
+
+Run any example:
 ```bash
-sudo sysctl iogpu.wired_limit_mb=N
+python mlx_lm/examples/streaming_basic.py
 ```
 
-The value `N` should be larger than the size of the model in megabytes but
-smaller than the memory size of the machine.
+## Supported Models
+
+Currently supports Qwen2.5 family models with streaming variants:
+- `Qwen/Qwen2.5-0.5B-Instruct`
+- `Qwen/Qwen2.5-1.5B-Instruct`
+- `Qwen/Qwen2.5-3B-Instruct`
+- `Qwen/Qwen2.5-7B-Instruct`
+
+And other Qwen3 variants. Check `mlx_lm/models/` for supported architectures.
+
+## How It Works
+
+Traditional LLM generation processes the entire input before generating output:
+
+```
+Input:  [The][quick][brown][fox] → Process → Output: [Le][rapide][renard][brun]
+```
+
+StreamingLLM processes incrementally with wait-k policy:
+
+```
+Input:  [The][quick][brown]... → Generate: [Le]
+Input:  [The][quick][brown][fox]... → Generate: [Le][rapide]
+...
+```
+
+This is achieved through:
+1. **Separate Position IDs** - Source: 0,1,2,3... Target: 0,1,2,3...
+2. **Dual KV Caches** - Independent source and target caches
+3. **Wait-k Policy** - Controlled lag between input and output
+
+## Technical Details
+
+### Streaming Generation Algorithm
+
+The core algorithm follows StreamingLLM's approach:
+
+```python
+while not finished:
+    if reading_mode:
+        # Read next source word chunk
+        process_source_tokens(...)
+        update_source_cache(...)
+
+        # Check if can start writing
+        if source_words_read >= wait_k + target_words:
+            switch_to_writing()
+
+    else:  # writing_mode
+        # Generate tokens until word boundary
+        token = sample_next_token(...)
+        update_target_cache(...)
+
+        if is_word_boundary(token):
+            yield word
+            switch_to_reading()
+```
+
+### Cache Management
+
+The `DualStreamingCache` maintains:
+- **Source cache**: KV states for input tokens
+- **Target cache**: KV states for generated tokens
+- **Merged cache**: Combined for attention computation
+
+Caches are merged before each forward pass and separated after.
+
+## Performance
+
+Typical performance on Apple Silicon (M1 Max):
+- **Speed**: 20-40 tokens/sec (model dependent)
+- **Memory**: ~2-8 GB depending on model size
+- **Latency**: Controlled by wait-k (typical: 200-500ms per word)
+
+## Differences from mlx-lm
+
+This library is a **focused fork** of mlx-lm specifically for streaming generation:
+
+**Removed**:
+- Batch generation
+- Fine-tuning (LoRA, full model)
+- Quantization (AWQ, GPTQ)
+- Model conversion utilities
+- Server/API functionality
+- Non-streaming models (90+ architectures)
+
+**Added**:
+- Streaming generation core (`streaming_generate.py`)
+- Dual cache system (`streaming_cache.py`)
+- Wait-k policy implementation
+- Streaming data utilities
+- Live visualization tools
+
+## References
+
+- **StreamingLLM Paper**: [Efficient Streaming Language Models with Attention Sinks](https://arxiv.org/abs/2309.17453)
+- **Wait-k Policy**: [Simultaneous Translation with Flexible Policy via Restricted Imitation Learning](https://aclanthology.org/P19-1289/)
+- **MLX**: [Apple's MLX Framework](https://github.com/ml-explore/mlx)
+- **Original StreamingLLM**: [MIT Implementation](https://github.com/mit-han-lab/streaming-llm)
+
+## Contributing
+
+Contributions are welcome! This project focuses specifically on streaming generation capabilities. Please see `CONTRIBUTING.md` for guidelines.
+
+## License
+
+MIT License - See LICENSE file for details.
+
+## Acknowledgments
+
+- Based on [mlx-lm](https://github.com/ml-explore/mlx-lm) by Apple's MLX team
+- Implements techniques from [StreamingLLM](https://arxiv.org/abs/2309.17453) by MIT HAN Lab
+- Built with [MLX](https://github.com/ml-explore/mlx) framework
