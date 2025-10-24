@@ -34,18 +34,19 @@ The demo uses **3 separate processes** to avoid MLX thread-safety issues:
 
 ## Current Status
 
-### ✅ Implemented (Demo Version)
+### ✅ Implemented (FULLY FUNCTIONAL!)
 
 - [x] Multi-process architecture with IPC queues
-- [x] STT process (simulated with pre-recorded conversation)
+- [x] STT process with **REAL microphone input** (Parakeet MLX)
 - [x] LLM process with streaming generation
-- [x] TTS process (simulated with console output)
+- [x] TTS process with **REAL audio output** (Kokoro MLX)
 - [x] Tool call detection (`<speak>` and `<stop_speaking>`)
-- [x] Basic conversation flow
+- [x] Full conversational flow
+- [x] Energy-based silence detection (skips empty audio)
 
-### 🚧 TODO (Production Version)
+### 🚧 Optional Enhancements
 
-To make this production-ready, integrate your existing implementations:
+To make this even better:
 
 #### STT Process (`stt_engine.py`)
 

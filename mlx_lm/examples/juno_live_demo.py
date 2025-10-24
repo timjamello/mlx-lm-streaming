@@ -33,60 +33,104 @@ logging.basicConfig(
 
 def stt_process(output_queue: mp.Queue, stop_event: mp.Event):
     """
-    STT Process: Continuously listens and transcribes speech.
-    Sends transcribed text to LLM process via queue.
+    STT Process: Continuously listens to microphone and transcribes speech.
+    Uses Parakeet MLX for real-time transcription.
     """
     import sounddevice as sd
     import numpy as np
     from collections import deque
+    import asyncio
+    import tempfile
+    import soundfile as sf
+    from pathlib import Path
+
+    # Import Parakeet STT
+    from parakeet_mlx import from_pretrained
 
     logger = logging.getLogger("STT")
     logger.info("STT Process starting...")
 
-    # Simplified STT for demo - just simulates receiving speech
-    # In real implementation, this would use Parakeet MLX
-
     # Audio parameters
     sample_rate = 16000
-    chunk_duration = 1.0  # 1 second chunks
+    chunk_duration = 3.0  # 3 second chunks for better transcription
     chunk_size = int(sample_rate * chunk_duration)
 
-    # Simulated conversation (in reality, this would be from microphone + Parakeet)
-    simulated_input = [
-        "[Timothy]: Hey Juno, can you hear me?",
-        "[Timothy]: I wanted to ask you about something.",
-        "[Timothy]: Can you tell me about the weather today?",
-        "[Timothy]: Actually, never mind. Let's talk about cooking instead.",
-        "[Timothy]: What's your favorite recipe for pasta carbonara?",
-        "[Timothy]: Thanks! That's helpful."
-    ]
-
     try:
-        for i, text in enumerate(simulated_input):
+        # Load Parakeet model (MLX - exclusive to this process!)
+        logger.info("Loading Parakeet STT model...")
+        asr_model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+        logger.info("Parakeet model loaded successfully")
+
+        logger.info("\n🎤 Listening to microphone... Speak now!\n")
+
+        # Continuous capture loop
+        while not stop_event.is_set():
+            # Capture audio from microphone
+            logger.debug(f"Recording {chunk_duration}s chunk...")
+            audio_chunk = sd.rec(
+                chunk_size,
+                samplerate=sample_rate,
+                channels=1,
+                dtype='int16',
+                blocking=True
+            )
+
             if stop_event.is_set():
                 break
 
-            # Simulate real-time speech arrival (1 second between segments)
-            time.sleep(2.0)
+            # Check if there's significant audio (simple energy check)
+            audio_float = audio_chunk.astype(np.float32) / 32768.0
+            energy = np.sqrt(np.mean(audio_float ** 2))
 
-            logger.info(f"Transcribed: {text}")
+            # Only transcribe if there's some energy (not silence)
+            if energy < 0.01:
+                logger.debug("Silence detected, skipping transcription")
+                continue
 
-            # Send to LLM process
-            output_queue.put({
-                'type': 'transcription',
-                'text': text,
-                'speaker': 'Timothy',
-                'timestamp': time.time()
-            })
+            logger.info("Audio detected, transcribing...")
 
-        # Signal end of stream
-        output_queue.put({'type': 'end'})
-        logger.info("STT Process completed")
+            # Save to temporary WAV file
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+                audio_float_squeezed = audio_float.squeeze()
+                sf.write(tmp_file.name, audio_float_squeezed, sample_rate)
+                tmp_path = tmp_file.name
+
+            try:
+                # Transcribe with Parakeet
+                result = asr_model.transcribe(tmp_path)
+
+                # Extract text
+                if hasattr(result, 'text'):
+                    text = result.text.strip()
+                else:
+                    text = str(result).strip()
+
+                # Only send if there's actual text
+                if text and len(text) > 0:
+                    logger.info(f"✅ Transcribed: {text}")
+
+                    # Send to LLM process
+                    output_queue.put({
+                        'type': 'transcription',
+                        'text': f"[Timothy]: {text}",
+                        'speaker': 'Timothy',
+                        'timestamp': time.time()
+                    })
+                else:
+                    logger.debug("Empty transcription, skipping")
+
+            finally:
+                # Clean up temp file
+                Path(tmp_path).unlink(missing_ok=True)
 
     except KeyboardInterrupt:
         logger.info("STT Process interrupted")
     except Exception as e:
-        logger.error(f"STT Process error: {e}")
+        logger.error(f"STT Process error: {e}", exc_info=True)
+    finally:
+        # Signal end of stream
+        output_queue.put({'type': 'end'})
+        logger.info("STT Process completed")
 
 
 # ==================== TTS Process ====================
@@ -94,15 +138,33 @@ def stt_process(output_queue: mp.Queue, stop_event: mp.Event):
 def tts_process(input_queue: mp.Queue, stop_event: mp.Event):
     """
     TTS Process: Receives text chunks and speaks them.
-    Uses Kokoro MLX for text-to-speech.
+    Uses Kokoro MLX for text-to-speech with real audio playback.
     """
+    import sounddevice as sd
+    import numpy as np
+    from mlx_audio.tts.models.kokoro import KokoroPipeline
+    from mlx_audio.tts.utils import load_model
+
     logger = logging.getLogger("TTS")
     logger.info("TTS Process starting...")
 
-    # Simplified TTS for demo - just prints to console
-    # In real implementation, this would use Kokoro MLX + sounddevice
-
     try:
+        # Load Kokoro TTS model (MLX - exclusive to this process!)
+        logger.info("Loading Kokoro TTS model...")
+        model_id = "prince-canuma/Kokoro-82M"
+        lang_code = "a"  # American English
+        voice = "af_heart"
+
+        model = load_model(model_id)
+        pipeline = KokoroPipeline(
+            lang_code=lang_code,
+            model=model,
+            repo_id=model_id
+        )
+        logger.info("Kokoro TTS model loaded successfully")
+
+        sample_rate = 24000  # Kokoro outputs at 24kHz
+
         while not stop_event.is_set():
             try:
                 # Non-blocking get with timeout
@@ -112,11 +174,31 @@ def tts_process(input_queue: mp.Queue, stop_event: mp.Event):
                     text = message['text']
                     logger.info(f"🔊 SPEAKING: {text}")
 
-                    # Simulate speech duration (in real version, this would be actual playback)
-                    time.sleep(len(text) * 0.05)  # ~50ms per character
+                    # Generate audio using Kokoro MLX
+                    generator = pipeline(text, voice=voice, speed=1.32)
+
+                    # Collect all audio chunks
+                    audio_chunks = []
+                    for i, (gs, ps, audio_chunk) in enumerate(generator):
+                        # MLX returns audio in shape (1, samples), extract the first channel
+                        if audio_chunk.ndim > 1:
+                            audio_chunk = audio_chunk[0]
+                        audio_chunks.append(audio_chunk)
+
+                    # Concatenate and play
+                    if audio_chunks:
+                        full_audio = np.concatenate(audio_chunks)
+
+                        # Play audio and wait for completion
+                        sd.play(full_audio, sample_rate)
+                        sd.wait()
+
+                        logger.info("✅ Finished speaking")
 
                 elif message['type'] == 'stop':
                     logger.info("🔇 Stopped speaking")
+                    # Stop any ongoing playback
+                    sd.stop()
 
                 elif message['type'] == 'end':
                     logger.info("TTS Process shutting down")
@@ -128,7 +210,7 @@ def tts_process(input_queue: mp.Queue, stop_event: mp.Event):
     except KeyboardInterrupt:
         logger.info("TTS Process interrupted")
     except Exception as e:
-        logger.error(f"TTS Process error: {e}")
+        logger.error(f"TTS Process error: {e}", exc_info=True)
 
 
 # ==================== LLM Process ====================
@@ -310,10 +392,17 @@ def main():
 
     logger = logging.getLogger("MAIN")
     logger.info("=" * 80)
-    logger.info("Juno Live Demo - Full Pipeline")
+    logger.info("🎙️  JUNO LIVE DEMO - Full Pipeline with Real Audio")
     logger.info("=" * 80)
     logger.info(f"Model: {args.model}")
     logger.info(f"Wait-k: {args.wait_k}")
+    logger.info("")
+    logger.info("This demo will:")
+    logger.info("  1. Listen to your microphone continuously (STT)")
+    logger.info("  2. Process speech with streaming LLM")
+    logger.info("  3. Speak responses through your speakers (TTS)")
+    logger.info("")
+    logger.info("💡 TIP: Say 'Hey Juno' or 'Juno' to address her!")
     logger.info("=" * 80)
 
     # Create IPC queues
