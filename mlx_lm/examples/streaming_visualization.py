@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-StreamingLLM Live Visualization Example - Juno Conversational Assistant
+StreamingLLM Live Visualization - Juno Conversational Assistant
 
 This example demonstrates a streaming conversational assistant (Juno) that:
 1. Continuously processes a stream of diarized speaker segments
@@ -9,7 +9,9 @@ This example demonstrates a streaming conversational assistant (Juno) that:
 4. Doesn't require wake words - always listening and processing
 """
 
+import os
 import sys
+import shutil
 
 from mlx_lm import load_streaming, stream_generate_streaming_llm
 
@@ -88,15 +90,12 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=50):
         source_text: Source text to translate/process
         wait_k: Wait-k policy parameter
     """
-    import os
-    import shutil
-
     print("=" * 80)
     print(f"LIVE STREAMING VISUALIZATION (wait-k={wait_k})")
     print("=" * 80)
     print()
 
-    # Get terminal width for proper wrapping calculation
+    # Get terminal width for proper wrapping
     try:
         terminal_width = shutil.get_terminal_size().columns
     except:
@@ -112,24 +111,6 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=50):
     # Build complete strings for display
     current_input_text = ""
     current_output_text = ""
-
-    # Helper function to calculate number of lines text will occupy
-    def calculate_lines(text, width=terminal_width):
-        if not text:
-            return 1
-        # Account for "streaming-input: " or "streaming-output: " prefix on first line
-        lines = 0
-        current_line_length = 0
-        for char in text:
-            if char == "\n":
-                lines += 1
-                current_line_length = 0
-            else:
-                current_line_length += 1
-                if current_line_length >= width:
-                    lines += 1
-                    current_line_length = 1
-        return max(1, lines + (1 if current_line_length > 0 else 0))
 
     # Clear screen and set up initial display
     if os.name == "nt":  # Windows
@@ -148,10 +129,10 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=50):
 
     # Reserve space for the display
     print("conversation-stream (incoming):")
-    print()  # Reserve multiple lines for input
+    print()  # Reserve space for input
     print()  # Separator
-    print("juno-response:")
-    print()  # Reserve multiple lines for output
+    print("juno-response (when speaking):")
+    print()  # Reserve space for output
     print()  # Extra space
 
     # Move back to saved position
@@ -214,212 +195,12 @@ def live_streaming_visualization(model, tokenizer, source_text, wait_k=50):
     print("=" * 80)
 
 
-def simple_streaming_visualization(model, tokenizer, source_text, wait_k=3):
-    """
-    Simpler visualization without ANSI cursor control.
-    Shows input/output with periodic updates.
-
-    Args:
-        model: The language model
-        tokenizer: The tokenizer
-        source_text: Source text to process
-        wait_k: Wait-k policy parameter
-    """
-    print("=" * 80)
-    print(f"STREAMING VISUALIZATION (wait-k={wait_k})")
-    print("=" * 80)
-    print()
-
-    source_words = source_text.strip().split()
-
-    print("conversation-stream (incoming):")
-    displayed_input_words = []
-
-    print("\njuno-response (when speaking):")
-    output_words = []
-
-    last_source_read = 0
-
-    for response in stream_generate_streaming_llm(
-        model=model,
-        tokenizer=tokenizer,
-        prompt=source_text,  # The diarized speaker stream
-        wait_k=wait_k,
-        max_new_words=500,
-        system_prompt=JUNO_SYSTEM_PROMPT,
-        temp=0.7,
-    ):
-        # Show source words as they're read
-        if (
-            hasattr(response, "source_words_read")
-            and response.source_words_read > last_source_read
-        ):
-            new_words = source_words[last_source_read : response.source_words_read]
-            for word in new_words:
-                displayed_input_words.append(word)
-            last_source_read = response.source_words_read
-
-        # Show target words as they're generated
-        if hasattr(response, "word_complete") and response.word_complete:
-            print(response.text, end=" ", flush=True)
-            output_words.append(response.text)
-
-    print()
-    print()
-    print("=" * 80)
-    print(f"Input processed: {' '.join(source_words[:last_source_read])}")
-    print(f"Source words: {last_source_read}/{len(source_words)}")
-    print(f"Target words: {len(output_words)}")
-    print("=" * 80)
-
-
-def side_by_side_visualization(model, tokenizer, source_text, wait_k=3):
-    """
-    Side-by-side visualization showing conversation stream and Juno's response.
-
-    Shows:
-    - Which conversation segments have been processed
-    - Which response words Juno has generated
-    - Current lag between input and output
-
-    Args:
-        model: The language model
-        tokenizer: The tokenizer
-        source_text: Conversation stream text
-        wait_k: Wait-k policy parameter
-    """
-    print("=" * 80)
-    print(f"CONVERSATION STREAM vs JUNO RESPONSE (wait-k={wait_k})")
-    print("=" * 80)
-    print()
-
-    source_words = source_text.strip().split()
-
-    print(f"{'Conversation Stream (Read)':<40} | {'Juno Response (Generated)':<40}")
-    print("-" * 80)
-
-    source_display = []
-    target_display = []
-
-    last_source_read = 0
-
-    for response in stream_generate_streaming_llm(
-        model=model,
-        tokenizer=tokenizer,
-        prompt=source_text,  # The diarized speaker stream
-        wait_k=wait_k,
-        max_new_words=500,
-        system_prompt=JUNO_SYSTEM_PROMPT,
-        temp=0.7,
-    ):
-        # Update source display
-        if (
-            hasattr(response, "source_words_read")
-            and response.source_words_read > last_source_read
-        ):
-            new_words = source_words[last_source_read : response.source_words_read]
-            source_display.extend(new_words)
-            last_source_read = response.source_words_read
-
-        # Update target display
-        if hasattr(response, "word_complete") and response.word_complete:
-            target_display.append(response.text)
-
-            # Print current state (truncate if too long)
-            source_str = " ".join(source_display)
-            target_str = " ".join(target_display)
-
-            # Truncate for display
-            if len(source_str) > 38:
-                source_str = source_str[:35] + "..."
-            if len(target_str) > 38:
-                target_str = target_str[:35] + "..."
-
-            # Clear line and print
-            sys.stdout.write("\r")
-            sys.stdout.write(f"{source_str:<40} | {target_str:<40}")
-            sys.stdout.flush()
-
-    print()
-    print()
-    print("=" * 80)
-    print(f"Conversation processed: {' '.join(source_words[:last_source_read])}")
-    print()
-    print(f"Juno's response: {' '.join(target_display)}")
-    print()
-    print(f"Processing lag: {last_source_read - len(target_display)} words")
-    print("=" * 80)
-
-
-def word_by_word_trace(model, tokenizer, source_text, wait_k=3):
-    """
-    Detailed word-by-word trace showing streaming progression.
-
-    For each target word generated, shows:
-    - Number of source words read at that point
-    - Current lag
-    - Cumulative output
-
-    Args:
-        model: The language model
-        tokenizer: The tokenizer
-        source_text: Source text to process
-        wait_k: Wait-k policy parameter
-    """
-    print("=" * 80)
-    print(f"WORD-BY-WORD STREAMING TRACE (wait-k={wait_k})")
-    print("=" * 80)
-    print()
-
-    source_words = source_text.strip().split()
-    print(f"Source: {source_text}")
-    print(f"Source words: {len(source_words)}")
-    print()
-    print(
-        f"{'Step':<6} {'Target Word':<20} {'Src Read':<10} {'Tgt Gen':<10} {'Lag':<6}"
-    )
-    print("-" * 80)
-
-    step = 0
-
-    for response in stream_generate_streaming_llm(
-        model=model,
-        tokenizer=tokenizer,
-        prompt=source_text,  # The diarized speaker stream
-        wait_k=wait_k,
-        max_new_words=500,
-        system_prompt=JUNO_SYSTEM_PROMPT,
-        temp=0.7,
-    ):
-        if hasattr(response, "word_complete") and response.word_complete:
-            step += 1
-            word = response.text
-            src_read = (
-                response.source_words_read
-                if hasattr(response, "source_words_read")
-                else "?"
-            )
-            tgt_gen = (
-                response.target_words_generated
-                if hasattr(response, "target_words_generated")
-                else "?"
-            )
-
-            if isinstance(src_read, int) and isinstance(tgt_gen, int):
-                lag = src_read - tgt_gen
-            else:
-                lag = "?"
-
-            print(f"{step:<6} {word:<20} {src_read:<10} {tgt_gen:<10} {lag:<6}")
-
-    print()
-    print("=" * 80)
-
-
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="StreamingLLM Live Visualization")
+    parser = argparse.ArgumentParser(
+        description="StreamingLLM Live Visualization - Juno Conversational Assistant"
+    )
     parser.add_argument(
         "--model",
         type=str,
@@ -427,28 +208,21 @@ def main():
         help="Model path",
     )
     parser.add_argument(
-        "--mode",
-        type=str,
-        default="live",
-        choices=["live", "simple", "side-by-side", "trace", "all"],
-        help="Visualization mode",
-    )
-    parser.add_argument(
         "--wait-k",
         type=int,
         default=7,
-        help="Wait-k value",
+        help="Wait-k value (number of source words to wait before generating)",
     )
     parser.add_argument(
         "--prompt",
         type=str,
         default=None,
-        help="Custom input prompt (default: long paragraph)",
+        help="Custom input prompt (default: example conversation)",
     )
 
     args = parser.parse_args()
 
-    # Use long paragraph by default
+    # Use example conversation by default
     if args.prompt is None:
         source_text = LONG_PARAGRAPH.strip()
     else:
@@ -458,38 +232,7 @@ def main():
     model, tokenizer = load_streaming(args.model)
     print("Model loaded successfully!\n")
 
-    if args.mode == "live":
-        live_streaming_visualization(model, tokenizer, source_text, wait_k=args.wait_k)
-    elif args.mode == "simple":
-        simple_streaming_visualization(
-            model, tokenizer, source_text, wait_k=args.wait_k
-        )
-    elif args.mode == "side-by-side":
-        side_by_side_visualization(model, tokenizer, source_text, wait_k=args.wait_k)
-    elif args.mode == "trace":
-        word_by_word_trace(model, tokenizer, source_text, wait_k=args.wait_k)
-    elif args.mode == "all":
-        print("\n" + "=" * 80)
-        print("MODE 1: SIMPLE STREAMING")
-        print("=" * 80 + "\n")
-        simple_streaming_visualization(
-            model, tokenizer, source_text, wait_k=args.wait_k
-        )
-
-        print("\n" + "=" * 80)
-        print("MODE 2: SIDE-BY-SIDE")
-        print("=" * 80 + "\n")
-        side_by_side_visualization(model, tokenizer, source_text, wait_k=args.wait_k)
-
-        print("\n" + "=" * 80)
-        print("MODE 3: WORD-BY-WORD TRACE")
-        print("=" * 80 + "\n")
-        word_by_word_trace(model, tokenizer, source_text, wait_k=args.wait_k)
-
-        print("\n" + "=" * 80)
-        print("MODE 4: LIVE STREAMING")
-        print("=" * 80 + "\n")
-        live_streaming_visualization(model, tokenizer, source_text, wait_k=args.wait_k)
+    live_streaming_visualization(model, tokenizer, source_text, wait_k=args.wait_k)
 
 
 if __name__ == "__main__":
