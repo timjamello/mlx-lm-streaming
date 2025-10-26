@@ -1,4 +1,3 @@
-
 import inspect
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -112,10 +111,13 @@ def scaled_dot_product_attention(
     scale: float,
     mask: Optional[mx.array],
     sinks: Optional[mx.array] = None,
+    recency_bias: Optional[mx.array] = None,
 ) -> mx.array:
     if hasattr(cache, "bits"):
         if sinks is not None:
             raise ValueError("Quantized SDPA does not support attention sinks.")
+        if recency_bias is not None:
+            raise ValueError("Quantized SDPA does not support recency bias.")
         return quantized_scaled_dot_product_attention(
             queries,
             keys,
@@ -126,11 +128,107 @@ def scaled_dot_product_attention(
             bits=cache.bits,
         )
     else:
-        return mx.fast.scaled_dot_product_attention(
-            queries,
-            keys,
-            values,
-            scale=scale,
-            mask=mask,
-            sinks=sinks,
-        )
+        # If recency bias is provided, we need to compute attention manually
+        if recency_bias is not None:
+            # queries: (B, n_q_heads, L, D)
+            # keys: (B, n_kv_heads, S, D)  - may have fewer heads due to GQA
+            # values: (B, n_kv_heads, S, D)
+            # recency_bias: dict with timestamp info OR pre-computed (1, S) array
+
+            B, n_q_heads, L, D = queries.shape
+            _, n_kv_heads, S, _ = keys.shape
+
+            # If recency_bias is a dict, compute the bias dynamically
+            if isinstance(recency_bias, dict):
+                from ..streaming_utils import compute_recency_bias
+
+                source_timestamps = recency_bias["source_timestamps"]
+                source_offset = recency_bias["source_offset"]
+                current_time = recency_bias["current_time"]
+                recency_window = recency_bias["recency_window"]
+                source_boost = recency_bias["source_boost"]
+                target_dampening = recency_bias["target_dampening"]
+
+                # Compute bias with actual cache size (S = source + target tokens)
+                target_length = S - source_offset
+                recency_bias = compute_recency_bias(
+                    source_timestamps=source_timestamps,
+                    source_length=source_offset,
+                    target_length=target_length,
+                    current_time=current_time,
+                    recency_window=recency_window,
+                    source_boost=source_boost,
+                    target_dampening=target_dampening,
+                )
+
+                if recency_bias is None:
+                    # No bias needed, fall back to fast path
+                    return mx.fast.scaled_dot_product_attention(
+                        queries,
+                        keys,
+                        values,
+                        scale=scale,
+                        mask=mask,
+                        sinks=sinks,
+                    )
+
+            # Handle Grouped Query Attention (GQA)
+            n_repeats = n_q_heads // n_kv_heads
+
+            if n_repeats > 1:
+                # Expand keys and values to match query heads
+                # (B, n_kv_heads, S, D) -> (B, n_kv_heads, 1, S, D) -> (B, n_kv_heads, n_repeats, S, D)
+                keys = mx.expand_dims(keys, axis=2)
+                keys = mx.repeat(keys, n_repeats, axis=2)
+                keys = keys.reshape(B, n_q_heads, S, D)
+
+                values = mx.expand_dims(values, axis=2)
+                values = mx.repeat(values, n_repeats, axis=2)
+                values = values.reshape(B, n_q_heads, S, D)
+
+            # Compute attention scores
+            scores = (
+                queries @ keys.transpose(0, 1, 3, 2)
+            ) * scale  # (B, n_q_heads, L, S)
+
+            # Add recency bias - broadcast across batch and heads
+            # recency_bias is (1, S) or (L, S)
+            if recency_bias.ndim == 2:
+                # Expand to (1, 1, L, S) to broadcast across batch and heads
+                if recency_bias.shape[0] == 1:
+                    # (1, S) -> (1, 1, 1, S)
+                    recency_bias = recency_bias.reshape(1, 1, 1, S)
+                else:
+                    # (L, S) -> (1, 1, L, S)
+                    recency_bias = recency_bias.reshape(1, 1, L, S)
+
+            scores = scores + recency_bias
+
+            # Apply mask
+            if mask is not None:
+                if isinstance(mask, str) and mask == "causal":
+                    # Create causal mask
+                    qL, kL = scores.shape[-2:]
+                    q_indices = mx.arange(kL - qL, kL)
+                    k_indices = mx.arange(kL)
+                    mask_array = q_indices[:, None] >= k_indices[None]
+                    scores = mx.where(mask_array, scores, mx.finfo(scores.dtype).min)
+                elif mask.dtype == mx.bool_:
+                    scores = mx.where(mask, scores, mx.finfo(scores.dtype).min)
+                else:
+                    scores = scores + mask
+
+            # Softmax and compute output
+            attn_weights = mx.softmax(scores, axis=-1, precise=True)
+            output = attn_weights @ values  # (B, n_q_heads, L, D)
+
+            return output
+        else:
+            return mx.fast.scaled_dot_product_attention(
+                queries,
+                keys,
+                values,
+                scale=scale,
+                mask=mask,
+                sinks=sinks,
+            )

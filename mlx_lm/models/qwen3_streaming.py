@@ -1,4 +1,3 @@
-
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
@@ -75,6 +74,7 @@ class StreamingAttention(nn.Module):
         cache: Optional[Any] = None,
         position_ids: Optional[mx.array] = None,
         is_reading: bool = True,
+        recency_bias: Optional[mx.array] = None,
     ) -> mx.array:
         B, L, D = x.shape
 
@@ -116,7 +116,13 @@ class StreamingAttention(nn.Module):
             keys = self.rope(keys)
 
         output = scaled_dot_product_attention(
-            queries, keys, values, cache=cache, scale=self.scale, mask=mask
+            queries,
+            keys,
+            values,
+            cache=cache,
+            scale=self.scale,
+            mask=mask,
+            recency_bias=recency_bias,
         )
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
 
@@ -167,6 +173,7 @@ class StreamingTransformerBlock(nn.Module):
         cache: Optional[Any] = None,
         position_ids: Optional[mx.array] = None,
         is_reading: bool = True,
+        recency_bias: Optional[mx.array] = None,
     ) -> mx.array:
         """
         Forward pass for streaming transformer block.
@@ -177,12 +184,13 @@ class StreamingTransformerBlock(nn.Module):
             cache: DualStreamingCache or standard cache
             position_ids: Custom position IDs
             is_reading: Reading (True) or writing (False) mode
+            recency_bias: Optional recency bias for attention reweighting
 
         Returns:
             Output tensor
         """
         r = self.self_attn(
-            self.input_layernorm(x), mask, cache, position_ids, is_reading
+            self.input_layernorm(x), mask, cache, position_ids, is_reading, recency_bias
         )
         h = x + r
         r = self.mlp(self.post_attention_layernorm(h))
@@ -214,6 +222,7 @@ class Qwen3ModelStreaming(nn.Module):
         input_embeddings: Optional[mx.array] = None,
         position_ids: Optional[mx.array] = None,
         is_reading: bool = True,
+        recency_bias: Optional[mx.array] = None,
     ):
         """
         Forward pass for streaming model.
@@ -224,6 +233,7 @@ class Qwen3ModelStreaming(nn.Module):
             input_embeddings: Optional pre-computed embeddings
             position_ids: Custom position IDs for streaming
             is_reading: Reading (True) or writing (False) mode
+            recency_bias: Optional recency bias for attention reweighting
 
         Returns:
             Hidden states after all layers
@@ -242,7 +252,7 @@ class Qwen3ModelStreaming(nn.Module):
             mask = None
 
         for layer, c in zip(self.layers, cache):
-            h = layer(h, mask, c, position_ids, is_reading)
+            h = layer(h, mask, c, position_ids, is_reading, recency_bias)
 
         return self.norm(h)
 
@@ -267,6 +277,7 @@ class Model(nn.Module):
         input_embeddings: Optional[mx.array] = None,
         position_ids: Optional[mx.array] = None,
         is_reading: bool = True,
+        recency_bias: Optional[mx.array] = None,
     ):
         """
         Forward pass with language modeling head.
@@ -277,11 +288,14 @@ class Model(nn.Module):
             input_embeddings: Optional pre-computed embeddings
             position_ids: Custom position IDs for streaming
             is_reading: Reading (True) or writing (False) mode
+            recency_bias: Optional recency bias for attention reweighting
 
         Returns:
             Logits for next token prediction
         """
-        out = self.model(inputs, cache, input_embeddings, position_ids, is_reading)
+        out = self.model(
+            inputs, cache, input_embeddings, position_ids, is_reading, recency_bias
+        )
         if self.args.tie_word_embeddings:
             out = self.model.embed_tokens.as_linear(out)
         else:

@@ -1,4 +1,3 @@
-
 from dataclasses import dataclass
 from typing import Optional
 
@@ -45,6 +44,7 @@ class Model(nn.Module):
         input_embeddings: Optional[mx.array] = None,
         position_ids: Optional[mx.array] = None,
         is_reading: bool = True,
+        recency_bias: Optional[mx.array] = None,
     ):
         """
         Forward pass with streaming support.
@@ -55,6 +55,7 @@ class Model(nn.Module):
             input_embeddings: Optional pre-computed embeddings
             position_ids: Custom position IDs for streaming
             is_reading: Reading (True) or writing (False) mode
+            recency_bias: Optional recency bias for attention reweighting
 
         Returns:
             Logits for next token prediction
@@ -65,6 +66,7 @@ class Model(nn.Module):
             input_embeddings=input_embeddings,
             position_ids=position_ids,
             is_reading=is_reading,
+            recency_bias=recency_bias,
         )
 
     def make_cache(self):

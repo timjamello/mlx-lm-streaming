@@ -1,3 +1,4 @@
+import time
 from typing import List, Optional, Tuple
 
 import mlx.core as mx
@@ -231,6 +232,7 @@ class StreamingState:
     - Which target words have been generated
     - Current mode (reading or writing)
     - Wait-k policy tracking
+    - Source token arrival timestamps for attention reweighting
     """
 
     def __init__(
@@ -262,9 +264,16 @@ class StreamingState:
 
         self.wait_lagging = []
 
+        # Track arrival time for each source token (for attention reweighting)
+        self.source_token_timestamps = []  # List of timestamps, one per source token
+
     def add_source_segment(self, token_length: int):
         """Add a new source segment as it's read from the queue."""
         self.source_seg_len.append(token_length)
+        # Track timestamp for each token in this segment
+        current_time = time.time()
+        for _ in range(token_length):
+            self.source_token_timestamps.append(current_time)
 
     def mark_source_stream_ended(self):
         """Mark that the source stream has ended (no more input coming)."""
@@ -328,3 +337,57 @@ class StreamingState:
             f"mode={'READ' if self.is_reading else 'WRITE'}, "
             f"finished={self.finished})"
         )
+
+
+def compute_recency_bias(
+    source_timestamps: List[float],
+    source_length: int,
+    target_length: int,
+    current_time: float,
+    recency_window: float = 1.0,
+    source_boost: float = 1000.0,
+    target_dampening: float = 100000000.0,
+) -> Optional[mx.array]:
+    """
+    Compute attention bias to boost recent source tokens and dampen target momentum.
+
+    Args:
+        source_timestamps: List of timestamps for each source token (may be shorter than source_length)
+        source_length: Actual number of source tokens in the cache
+        target_length: Number of target tokens generated so far
+        current_time: Current timestamp
+        recency_window: Time window (seconds) for considering tokens as "recent"
+        source_boost: Attention boost for recent source tokens
+        target_dampening: Attention dampening for target tokens (to reduce momentum)
+
+    Returns:
+        Bias matrix of shape (1, source_length + target_length) or None if no bias needed
+    """
+    if source_length == 0 or target_length == 0:
+        return None
+
+    total_length = source_length + target_length
+
+    # Create bias matrix: (1, total_length)
+    # We only need to bias the last target token (the one being generated)
+    bias = mx.zeros((1, total_length))
+
+    # Compute recency for each source token that we have a timestamp for
+    # Note: source_timestamps may be shorter than source_length due to template tokens
+    num_timestamped = min(len(source_timestamps), source_length)
+    timestamp_offset = source_length - num_timestamped  # Where our timestamps start
+
+    for i in range(num_timestamped):
+        timestamp = source_timestamps[i]
+        age = current_time - timestamp
+        if age < recency_window:
+            # Recent tokens get a boost
+            # Use exponential decay: newer = stronger boost
+            recency_factor = mx.exp(-age / recency_window)
+            bias[0, timestamp_offset + i] = source_boost * recency_factor
+
+    # Dampen target tokens to reduce momentum
+    if target_length > 0:
+        bias[0, source_length:] = -target_dampening
+
+    return bias

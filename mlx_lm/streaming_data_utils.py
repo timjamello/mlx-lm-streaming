@@ -343,15 +343,28 @@ class QueueSourceReader:
         """Tokenize text without adding special tokens."""
         return self.tokenizer.encode(text, add_special_tokens=False)
 
-    def _fill_buffer(self):
+    def _fill_buffer(self, blocking=True):
         """
         Read from queue and fill word buffer.
 
-        Blocks if queue is empty. Returns when buffer has words or stream ends.
+        Args:
+            blocking: If True, blocks until data available. If False, returns immediately.
+
+        Returns when buffer has words or stream ends.
         """
         while len(self.word_buffer) == 0 and not self.stream_ended:
-            # Block waiting for next chunk
-            text_chunk = self.queue.get()
+            # Try to get next chunk
+            if blocking:
+                text_chunk = self.queue.get()
+            else:
+                # Non-blocking get
+                try:
+                    from queue import Empty
+
+                    text_chunk = self.queue.get_nowait()
+                except Empty:
+                    # No data available, return without filling buffer
+                    return
 
             if text_chunk is None:
                 # End of stream signal
@@ -379,19 +392,20 @@ class QueueSourceReader:
             # Add words to buffer
             self.word_buffer.extend(words)
 
-    def get_next_word_tokens(self) -> Optional[Tuple[mx.array, int]]:
+    def get_next_word_tokens(self, blocking=True) -> Optional[Tuple[mx.array, int]]:
         """
         Get tokens for the next word.
 
-        Blocks if no words are available in the queue. Returns None if stream has ended.
+        Args:
+            blocking: If True, blocks until data available. If False, returns None immediately if no data.
 
         Returns:
-            Tuple of (token_array, num_tokens) or None if stream ended
+            Tuple of (token_array, num_tokens) or None if stream ended or no data available (when blocking=False)
             - token_array: mx.array of shape (1, num_tokens)
             - num_tokens: Number of tokens in this word/segment
         """
-        # Fill buffer if empty (blocks here)
-        self._fill_buffer()
+        # Fill buffer if empty (blocks if blocking=True)
+        self._fill_buffer(blocking=blocking)
 
         # Handle first word with template prefix
         if self.first_word and not self.template_prefix_added:

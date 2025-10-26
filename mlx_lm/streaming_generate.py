@@ -194,16 +194,25 @@ def stream_generate_streaming(
     while not state.finished:
 
         if state.is_reading and state.should_read_next_source():
-            # Get next word tokens from queue (BLOCKS if queue is empty)
-            result = source_reader.get_next_word_tokens()
+            # Try to get next word tokens from queue (NON-BLOCKING)
+            # This allows model to continue generating if no more source is available yet
+            result = source_reader.get_next_word_tokens(blocking=False)
 
             if result is None:
-                # Stream ended
-                state.mark_source_stream_ended()
-                if state.check_wait_k_policy():
+                # Check if stream actually ended or just no data available yet
+                if source_reader.is_stream_ended():
+                    # Stream ended
+                    state.mark_source_stream_ended()
+                    if state.check_wait_k_policy():
+                        state.switch_to_writing()
+                        current_word_tokens = []
+                    continue
+                else:
+                    # No data available yet, but stream hasn't ended
+                    # Switch to writing mode to continue generating
                     state.switch_to_writing()
                     current_word_tokens = []
-                continue
+                    continue
 
             source_chunk, tokens_to_read = result
 
@@ -252,11 +261,23 @@ def stream_generate_streaming(
 
                     position_ids = mx.array([[target_pos]])
 
+                    # Pass recency info as a dict - bias will be computed in attention layer
+                    # with the correct cache size
+                    recency_bias = {
+                        "source_timestamps": state.source_token_timestamps,
+                        "source_offset": attn_cache.source_offset,
+                        "current_time": time.time(),
+                        "recency_window": 2.0,
+                        "source_boost": 5.0,
+                        "target_dampening": 1.0,
+                    }
+
                     logits = model(
                         next_input,
                         cache=caches,
                         position_ids=position_ids,
                         is_reading=False,
+                        recency_bias=recency_bias,
                     )
                 except Exception as e:
                     import traceback
@@ -315,10 +336,14 @@ def stream_generate_streaming(
                         )
                         next_input = last_token
 
-                        # Read next wait-k words - MUST read exactly wait_k words after suppressing EOS
+                        # Read next wait-k words - MUST BLOCK and wait for more source after suppressing EOS
                         words_read = 0
                         for _ in range(wait_k):
-                            result = source_reader.get_next_word_tokens()
+                            if not state.should_read_next_source():
+                                break
+
+                            # BLOCKING read - we must wait for more source after suppressing EOS
+                            result = source_reader.get_next_word_tokens(blocking=True)
                             if result is None:
                                 state.mark_source_stream_ended()
                                 break
