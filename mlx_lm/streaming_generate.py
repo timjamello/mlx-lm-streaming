@@ -1,4 +1,3 @@
-
 import time
 from dataclasses import dataclass
 from typing import Dict, Generator, List, Optional, Union
@@ -57,8 +56,7 @@ class GenerationResponse:
 def stream_generate_streaming(
     model,
     tokenizer,
-    source_token_ids: mx.array,
-    source_seg_len: List[int],
+    source_reader,
     wait_k: int = 3,
     max_new_words: Optional[int] = None,
     max_tokens: int = 1024,
@@ -73,19 +71,19 @@ def stream_generate_streaming(
     **kwargs,
 ) -> Generator[Dict, None, None]:
     """
-    Generate tokens using streaming policy (wait-k).
+    Generate tokens using streaming policy (wait-k) with queue-based input.
 
     This implements the core streaming generation algorithm from StreamingLLM,
     alternating between reading source tokens and writing target tokens based
-    on the wait-k policy.
+    on the wait-k policy. Source text is read from a queue, blocking when
+    more input is needed.
 
     Reference: StreamingLLM's _sample_streaming in generation/generate.py:947-1206
 
     Args:
         model: The streaming model (with DualStreamingCache support)
         tokenizer: Tokenizer instance
-        source_token_ids: Source token IDs (1, seq_len)
-        source_seg_len: List of token lengths for each source segment/word
+        source_reader: QueueSourceReader that provides tokens from a queue
         wait_k: Wait-k parameter (wait for k source words before generating)
         max_new_words: Maximum number of target words to generate
         max_tokens: Maximum total tokens to generate
@@ -112,7 +110,7 @@ def stream_generate_streaming(
         1. Initialize dual caches and state
         2. While not finished:
            IF reading mode:
-             - Read next source word chunk
+             - Read next source word from queue (BLOCKS if queue empty)
              - Update source cache
              - Switch to writing if wait-k satisfied
            ELSE (writing mode):
@@ -121,18 +119,20 @@ def stream_generate_streaming(
              - Switch to reading if more source available
 
     Example:
+        >>> from queue import Queue
+        >>> from mlx_lm.streaming_data_utils import QueueSourceReader
         >>>
-        >>> prepared = prepare_streaming_input(
-        ...     "Hello world, how are you?",
-        ...     tokenizer,
-        ...     wait_k=2
-        ... )
+        >>> source_queue = Queue()
+        >>> reader = QueueSourceReader(source_queue, tokenizer)
+        >>>
+        >>> # In another thread:
+        >>> source_queue.put("Hello world")
+        >>> source_queue.put(None)
         >>>
         >>> for chunk in stream_generate_streaming(
         ...     model,
         ...     tokenizer,
-        ...     prepared["source_token_ids"],
-        ...     prepared["source_seg_len"],
+        ...     reader,
         ...     wait_k=2
         ... ):
         ...     print(chunk["text"], end="", flush=True)
@@ -146,9 +146,7 @@ def stream_generate_streaming(
     )
 
     if hasattr(model, "make_cache"):
-        caches = (
-            model.make_cache()
-        )
+        caches = model.make_cache()
     else:
         num_layers = len(model.layers)
         caches = [DualStreamingCache() for _ in range(num_layers)]
@@ -163,7 +161,6 @@ def stream_generate_streaming(
         attn_cache = caches[0]
 
     state = StreamingState(
-        source_seg_len=source_seg_len,
         wait_k=wait_k,
         max_target_words=max_new_words,
         pe_cache_length=pe_cache_length,
@@ -197,25 +194,24 @@ def stream_generate_streaming(
     while not state.finished:
 
         if state.is_reading and state.should_read_next_source():
-            tokens_to_read = state.get_source_tokens_to_read()
+            # Get next word tokens from queue (BLOCKS if queue is empty)
+            result = source_reader.get_next_word_tokens()
+
+            if result is None:
+                # Stream ended
+                state.mark_source_stream_ended()
+                if state.check_wait_k_policy():
+                    state.switch_to_writing()
+                    current_word_tokens = []
+                continue
+
+            source_chunk, tokens_to_read = result
 
             if tokens_to_read == 0:
-                state.mark_source_read()
-                if state.check_wait_k_policy():
-                    state.switch_to_writing()
-                    current_word_tokens = []
                 continue
 
-            source_chunk = source_token_ids[
-                :, source_pos_offset : source_pos_offset + tokens_to_read
-            ]
-
-            if source_chunk.shape[1] == 0:
-                state.mark_source_read()
-                if state.check_wait_k_policy():
-                    state.switch_to_writing()
-                    current_word_tokens = []
-                continue
+            # Add this segment to state
+            state.add_source_segment(tokens_to_read)
 
             position_ids = mx.arange(
                 source_pos_offset, source_pos_offset + tokens_to_read
@@ -279,7 +275,7 @@ def stream_generate_streaming(
 
                 # Mask EOS token only for the next token after reading new source
                 if mask_eos_next_token:
-                    logits[:, tokenizer.eos_token_id] = float('-inf')
+                    logits[:, tokenizer.eos_token_id] = float("-inf")
                     mask_eos_next_token = False
 
                 next_token = sampler(logits)
@@ -312,40 +308,41 @@ def stream_generate_streaming(
                                 "word_complete": True,
                             }
 
-                        last_token = mx.array([[all_target_tokens[-1]]]) if len(all_target_tokens) > 0 else assistant_start_tokens
-                        if len(all_target_tokens) <= 0:
-                            time.sleep(0.1)
+                        last_token = (
+                            mx.array([[all_target_tokens[-1]]])
+                            if len(all_target_tokens) > 0
+                            else assistant_start_tokens
+                        )
                         next_input = last_token
 
-                        # Read next wait-k words (or all remaining if fewer) to give model more context
-                        words_to_read = min(wait_k, len(state.source_seg_len) - state.source_words_read)
-                        for _ in range(words_to_read):
-                            if not state.should_read_next_source():
+                        # Read next wait-k words - MUST read exactly wait_k words after suppressing EOS
+                        words_read = 0
+                        for _ in range(wait_k):
+                            result = source_reader.get_next_word_tokens()
+                            if result is None:
+                                state.mark_source_stream_ended()
                                 break
 
-                            tokens_to_read = state.get_source_tokens_to_read()
+                            source_chunk, tokens_to_read = result
                             if tokens_to_read == 0:
-                                state.mark_source_read()
                                 continue
 
-                            source_chunk = source_token_ids[
-                                :, source_pos_offset : source_pos_offset + tokens_to_read
-                            ]
-
-                            if source_chunk.shape[1] == 0:
-                                state.mark_source_read()
-                                continue
+                            state.add_source_segment(tokens_to_read)
 
                             position_ids = mx.arange(
                                 source_pos_offset, source_pos_offset + tokens_to_read
                             ).reshape(1, -1)
 
                             _ = model(
-                                source_chunk, cache=caches, position_ids=position_ids, is_reading=True
+                                source_chunk,
+                                cache=caches,
+                                position_ids=position_ids,
+                                is_reading=True,
                             )
 
                             source_pos_offset += tokens_to_read
                             state.mark_source_read()
+                            words_read += 1
 
                             yield {
                                 "text": "",
@@ -357,11 +354,17 @@ def stream_generate_streaming(
                                 "word_complete": False,
                             }
 
-                        # Set flag to mask EOS for the next token after reading new source
-                        mask_eos_next_token = True
-                        state.switch_to_writing()
-                        current_word_tokens = []
-                        break
+                        # Check if we successfully read wait_k words
+                        if words_read == wait_k:
+                            # We read new source, mask EOS and continue generation
+                            mask_eos_next_token = True
+                            state.switch_to_writing()
+                            current_word_tokens = []
+                            break
+                        else:
+                            # Stream ended without reading new words - finish generation
+                            state.finished = True
+                            break
                     else:
                         current_word_tokens.pop()
 
@@ -463,89 +466,8 @@ def apply_repetition_penalty(
     return logits
 
 
-def generate_streaming(
-    model,
-    tokenizer,
-    prompt: str,
-    wait_k: int = 3,
-    max_new_words: Optional[int] = None,
-    max_tokens: int = 1024,
-    system_prompt: str = "",
-    split_mode: str = "word",
-    verbose: bool = False,
-    **kwargs,
-) -> str:
-    """
-    Convenient wrapper for streaming generation.
-
-    Args:
-        model: The streaming model
-        tokenizer: Tokenizer instance
-        prompt: Input prompt text
-        wait_k: Wait-k parameter
-        max_new_words: Maximum words to generate
-        max_tokens: Maximum tokens to generate
-        system_prompt: System prompt
-        split_mode: How to split text ('word' or 'sentence')
-        verbose: Whether to print progress
-        **kwargs: Additional generation parameters
-
-    Returns:
-        Generated text as a single string
-
-    Example:
-        >>> from mlx_lm.models.qwen2_streaming import Model, ModelArgs
-        >>> model = Model(args)
-        >>> text = generate_streaming(
-        ...     model,
-        ...     tokenizer,
-        ...     "Translate to French: Hello world",
-        ...     wait_k=3
-        ... )
-    """
-    from .streaming_data_utils import prepare_streaming_input
-
-    prepared = prepare_streaming_input(
-        source_text=prompt,
-        tokenizer=tokenizer,
-        wait_k=wait_k,
-        system_prompt=system_prompt,
-        split_mode=split_mode,
-        add_space=kwargs.get("add_space", False),
-        pe_cache_length=kwargs.get("pe_cache_length", 0),
-    )
-
-    if verbose:
-        print("=" * 50)
-        print(f"Streaming generation with wait-k={wait_k}")
-        print("=" * 50)
-
-    generated_text = ""
-    for chunk in stream_generate_streaming(
-        model=model,
-        tokenizer=tokenizer,
-        source_token_ids=prepared["source_token_ids"],
-        source_seg_len=prepared["source_seg_len"],
-        wait_k=wait_k,
-        max_new_words=max_new_words,
-        max_tokens=max_tokens,
-        assistant_start_tokens=prepared["assistant_start_tokens"],
-        split_mode=split_mode,
-        end_token=prepared["metadata"]["end_token"],
-        **kwargs,
-    ):
-        if chunk["mode"] == "write" and chunk["text"]:
-            generated_text += chunk["text"]
-            if verbose:
-                print(chunk["text"], end="", flush=True)
-
-    if verbose:
-        print()
-        print("=" * 50)
-        print(f"Generated {len(generated_text.split())} words")
-        print("=" * 50)
-
-    return generated_text
+# Removed: generate_streaming() - static text API no longer supported
+# Use stream_generate() with a Queue instead
 
 import time
 from typing import Generator, List, Optional, Union
@@ -562,11 +484,13 @@ from .tokenizer_utils import TokenizerWrapper
 def stream_generate(
     model: nn.Module,
     tokenizer: Union[PreTrainedTokenizer, TokenizerWrapper],
-    prompt: Union[str, mx.array, List[int]],
+    source_queue,
     wait_k: int = 3,
     max_new_words: Optional[int] = None,
     max_tokens_per_word: int = 50,
     system_prompt: str = "Translate the following English paragraph to French",
+    split_mode: str = "word",
+    pe_cache_length: Optional[int] = None,
     temp: float = 0.0,
     top_p: float = 1.0,
     min_p: float = 0.0,
@@ -575,30 +499,36 @@ def stream_generate(
     **kwargs,
 ) -> Generator[GenerationResponse, None, None]:
     """
-    A generator producing text using StreamingLLM's wait-k policy.
+    A generator producing text using StreamingLLM's wait-k policy with queue-based input.
 
-    This function enables streaming generation where the model processes
-    source text incrementally and generates output with a configurable lag
-    (wait-k policy). This is useful for simultaneous translation, streaming
-    transcription, and real-time text processing.
+    This function enables real-time streaming generation where the model processes
+    source text incrementally as it arrives from a queue, blocking when waiting for
+    more input. This is ideal for simultaneous translation, live transcription,
+    and real-time text processing scenarios.
 
     Args:
         model (nn.Module): The model to use for generation. Must support streaming
             mode (e.g., Qwen2ModelStreaming).
         tokenizer (PreTrainedTokenizer): The tokenizer.
-        prompt (Union[str, mx.array, List[int]]): The input prompt string or
-            integer tokens. This is treated as the "source" text in streaming mode.
-            NOTE: This should be ONLY the source text to process, not including the
-            instruction/task description.
+        source_queue (Queue): Queue object that receives source text chunks (strings)
+            and None as end-of-stream signal. The generator blocks when the queue
+            is empty, waiting for more input.
         wait_k (int): Number of source words to wait for before generating each
             target word. Default: ``3``.
         max_new_words (Optional[int]): Maximum number of words to generate. If None,
-            generates until end of source. Default: ``None``.
+            generates until source stream ends. Default: ``None``.
         max_tokens_per_word (int): Maximum tokens per generated word. Default: ``50``.
         system_prompt (str): The system/instruction prompt that describes the task
             (e.g., "Translate the following English paragraph to French"). This is
             kept separate from the source text and NOT segmented word-by-word.
             Default: ``"Translate the following English paragraph to French"``.
+        split_mode (str): How to split source text ('word' or 'sentence'). Default: ``'word'``.
+        pe_cache_length (Optional[int]): Position encoding offset for target tokens. This creates
+            a separation between source and target position IDs to prevent overlap. Source tokens
+            use positions [0, 1, 2, ...], while target tokens use [pe_cache_length, pe_cache_length+1, ...].
+            Should be set larger than your maximum expected source token length. If None, defaults to
+            8192 for models with max_position_embeddings >= 32768, otherwise uses max_position_embeddings // 2.
+            For longer inputs, increase this value (e.g., 16384 or 32768). Default: ``None`` (auto-detect).
         temp (float): Sampling temperature. Default: ``0.0`` (greedy).
         top_p (float): Sampling top-p. Default: ``1.0``.
         min_p (float): Sampling min-p. Default: ``0.0``.
@@ -616,55 +546,78 @@ def stream_generate(
             - target_words_generated: Number of target words generated so far
 
     Example:
-        >>> from mlx_streaming_llm import load, stream_generate
+        >>> from queue import Queue
+        >>> from threading import Thread
+        >>> from mlx_lm import load, stream_generate
         >>>
         >>> model, tokenizer = load("Qwen/Qwen2.5-0.5B-Instruct")
-        >>> source_text = "Hello, how are you?"
-        >>> system_prompt = "Translate the following English paragraph to French"
+        >>> source_queue = Queue()
+        >>>
+        >>> # Feed text from another thread (e.g., from STT)
+        >>> def feed_text():
+        ...     source_queue.put("Hello ")
+        ...     source_queue.put("world ")
+        ...     source_queue.put(None)  # Signal end of stream
+        >>>
+        >>> Thread(target=feed_text).start()
         >>>
         >>> for response in stream_generate(
-        ...     model, tokenizer, source_text,
+        ...     model, tokenizer, source_queue,
         ...     wait_k=3,
-        ...     system_prompt=system_prompt
+        ...     system_prompt="Translate to French"
         ... ):
         ...     if response.word_complete:
         ...         print(response.text, end=' ', flush=True)
-        ...         print(f"[{response.source_words_read} source words]")
     """
     if not isinstance(tokenizer, TokenizerWrapper):
         tokenizer = TokenizerWrapper(tokenizer)
 
-    preparator = StreamingDataPreparator(tokenizer, system_prompt=system_prompt)
+    # Create queue source reader
+    from .streaming_data_utils import QueueSourceReader
 
-    if isinstance(prompt, str):
-        formatted_text, token_ids, seg_lens = preparator.prepare_source_text(prompt)
+    source_reader = QueueSourceReader(
+        queue=source_queue,
+        tokenizer=(
+            tokenizer._tokenizer if hasattr(tokenizer, "_tokenizer") else tokenizer
+        ),
+        split_mode=split_mode,
+        system_prompt=system_prompt,
+    )
 
-    elif isinstance(prompt, (list, mx.array)):
-        token_ids = prompt.tolist() if isinstance(prompt, mx.array) else prompt
-        seg_lens = [1] * len(token_ids)
-    else:
-        raise ValueError("Prompt must be a string, list of ints, or mx.array")
+    # Auto-detect pe_cache_length if not provided
+    # This creates position ID separation: source uses [0, 1, 2, ...], target uses [pe_cache_length, ...]
+    if pe_cache_length is None:
+        # Try to get max_position_embeddings from model config
+        if hasattr(model, "config") and hasattr(
+            model.config, "max_position_embeddings"
+        ):
+            max_pos = model.config.max_position_embeddings
+            # For models with large context (32k+), use 8192 as a reasonable default
+            # For smaller models, use half the max to leave room for both source and target
+            if max_pos >= 32768:
+                pe_cache_length = 8192
+            else:
+                pe_cache_length = max_pos // 2
+        else:
+            # Fallback default for models without config
+            pe_cache_length = 8192
+
+    # Assistant start tokens
+    assistant_template = "<|im_start|>assistant\n"
+    assistant_tokens = tokenizer.encode(assistant_template, add_special_tokens=False)
+    assistant_start_tokens = mx.array([assistant_tokens])
 
     tic = time.perf_counter()
     prompt_time = 0
     first_token = True
     total_tokens = 0
-    source_words_total = len(seg_lens)
-
-    if not isinstance(token_ids, mx.array):
-        token_ids = mx.array([token_ids])
-    elif token_ids.ndim == 1:
-        token_ids = token_ids.reshape(1, -1)
-
-    assistant_start_tokens = mx.array([preparator.assistant_tokens])
-
-    pe_cache_length = int(token_ids.shape[1])
 
     for output in stream_generate_streaming(
         model=model,
-        tokenizer=tokenizer._tokenizer if hasattr(tokenizer, "_tokenizer") else tokenizer,
-        source_token_ids=token_ids,
-        source_seg_len=seg_lens,
+        tokenizer=(
+            tokenizer._tokenizer if hasattr(tokenizer, "_tokenizer") else tokenizer
+        ),
+        source_reader=source_reader,
         wait_k=wait_k,
         max_new_words=max_new_words,
         max_tokens_per_word=max_tokens_per_word,
@@ -683,13 +636,17 @@ def stream_generate(
         total_tokens += 1
         elapsed = time.perf_counter() - tic
 
+        # For queue-based streaming, we don't know prompt tokens upfront
+        # Use source_words_read as a proxy
+        prompt_tokens = output.get("source_words_read", 0)
+
         response = GenerationResponse(
             text=output.get("text", ""),
             token=output.get("token", 0),
             logprobs=mx.array([0.0]),
             from_draft=False,
-            prompt_tokens=len(token_ids),
-            prompt_tps=len(token_ids) / prompt_time if prompt_time > 0 else 0.0,
+            prompt_tokens=prompt_tokens,
+            prompt_tps=prompt_tokens / prompt_time if prompt_time > 0 else 0.0,
             generation_tokens=total_tokens,
             generation_tps=total_tokens / elapsed if elapsed > 0 else 0.0,
             peak_memory=mx.get_peak_memory() / 1e9,

@@ -42,18 +42,32 @@ pip install -e .
 ## Quick Start
 
 ```python
+from queue import Queue
+from threading import Thread
 from mlx_lm import load, stream_generate
 
 # Load a streaming-compatible model
 model, tokenizer = load("Qwen/Qwen2.5-0.5B-Instruct")
 
-# Stream generation with wait-k=3
+# Create a queue for source text
+source_queue = Queue()
+
+# Feed source text (e.g., from STT pipeline)
+def feed_text():
+    source_queue.put("Hello, how are ")
+    source_queue.put("you doing today?")
+    source_queue.put(None)  # Signal end of stream
+
+Thread(target=feed_text).start()
+
+# Stream generation with wait-k=3 (BLOCKS waiting for queue input)
 for response in stream_generate(
     model=model,
     tokenizer=tokenizer,
-    prompt="Translate to French: Hello, how are you doing today?",
+    source_queue=source_queue,
     wait_k=3,  # Wait for 3 source words before generating
     max_new_words=20,
+    system_prompt="Translate to French",
     temp=0.7,
 ):
     if response.word_complete:
@@ -62,21 +76,35 @@ for response in stream_generate(
 
 ## Python API
 
-### Basic Streaming
+### Basic Streaming with Queue
 
 ```python
+from queue import Queue
+from threading import Thread
 from mlx_lm import load, stream_generate
 
 model, tokenizer = load("Qwen/Qwen2.5-0.5B-Instruct")
 
-# Generate with streaming
+# Create queue for source text input
+source_queue = Queue()
+
+# Feed source text from another thread (e.g., STT pipeline)
+def feed_source():
+    # Source text chunks can arrive at any time
+    source_queue.put("Your source ")
+    source_queue.put("text here")
+    source_queue.put(None)  # Signal end of stream
+
+Thread(target=feed_source).start()
+
+# Generate with streaming (BLOCKS waiting for queue input)
 for response in stream_generate(
     model=model,
     tokenizer=tokenizer,
-    prompt="Your source text here",
+    source_queue=source_queue,  # Queue-based input
     wait_k=3,
     max_new_words=50,
-    system_prompt="Translate to French",  # Optional task description
+    system_prompt="Translate to French",
     temp=0.0,  # Greedy decoding
 ):
     if response.word_complete:
@@ -124,15 +152,16 @@ Task description kept separate from source text (not segmented).
 
 See the `mlx_lm/examples/` directory for detailed examples:
 
-- **`streaming_basic.py`** - Introduction to streaming generation
+- **`streaming_queue_demo.py`** - NEW: Queue-based streaming with simulated STT feed
+- **`streaming_basic.py`** - Introduction to streaming generation with queue API
+- **`streaming_realtime.py`** - Real-time streaming simulation with delays
 - **`streaming_cli_demo.py`** - Compare different wait-k values
 - **`streaming_visualization.py`** - Visualize input/output streams
-- **`streaming_realtime.py`** - Real-time streaming simulation
 - **`juno_live_demo.py`** - Multi-process live conversation assistant
 
 Run any example:
 ```bash
-python mlx_lm/examples/streaming_basic.py
+python mlx_lm/examples/streaming_queue_demo.py --mode basic
 ```
 
 ## Supported Models
@@ -153,18 +182,21 @@ Traditional LLM generation processes the entire input before generating output:
 Input:  [The][quick][brown][fox] → Process → Output: [Le][rapide][renard][brun]
 ```
 
-StreamingLLM processes incrementally with wait-k policy:
+StreamingLLM processes incrementally with wait-k policy and **real-time queue input**:
 
 ```
-Input:  [The][quick][brown]... → Generate: [Le]
-Input:  [The][quick][brown][fox]... → Generate: [Le][rapide]
+Queue: [The] → Read → (waiting for more input, BLOCKING)
+Queue: [The][quick][brown] → Read → Generate: [Le]
+Queue: [The][quick][brown][fox] → Read → Generate: [Le][rapide]
 ...
 ```
 
 This is achieved through:
-1. **Separate Position IDs** - Source: 0,1,2,3... Target: 0,1,2,3...
-2. **Dual KV Caches** - Independent source and target caches
-3. **Wait-k Policy** - Controlled lag between input and output
+1. **Queue-Based Input** - Source text arrives incrementally via thread-safe Queue, blocking when empty
+2. **Separate Position IDs** - Source: 0,1,2,3... Target: 0,1,2,3...
+3. **Dual KV Caches** - Independent source and target caches
+4. **Wait-k Policy** - Controlled lag between input and output
+5. **Dynamic Segmentation** - Text is tokenized and segmented on-the-fly as it arrives
 
 ## Technical Details
 

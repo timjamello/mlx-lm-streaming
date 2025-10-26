@@ -1,4 +1,3 @@
-
 from typing import Dict, List, Optional, Tuple
 
 import mlx.core as mx
@@ -270,3 +269,181 @@ def prepare_streaming_input(
         "metadata": metadata,
         "formatted_source_text": formatted_text,
     }
+
+
+class QueueSourceReader:
+    """
+    Reads source text from a Queue and provides tokens on-demand.
+
+    This class enables real-time streaming input where source text arrives
+    incrementally (e.g., from live STT). The reader blocks when the queue
+    is empty, waiting for more input.
+
+    Usage:
+        >>> from queue import Queue
+        >>> source_queue = Queue()
+        >>> reader = QueueSourceReader(source_queue, tokenizer, split_mode='word')
+        >>>
+        >>> # In another thread:
+        >>> source_queue.put("Hello world ")
+        >>> source_queue.put("How are you?")
+        >>> source_queue.put(None)  # Signal end of stream
+        >>>
+        >>> # Reading (blocks until text available):
+        >>> while not reader.is_stream_ended():
+        ...     tokens, length = reader.get_next_word_tokens()
+        ...     if tokens is not None:
+        ...         process(tokens)
+    """
+
+    def __init__(
+        self,
+        queue,
+        tokenizer,
+        split_mode: str = "word",
+        system_prompt: str = "",
+        user_template: str = "<|im_start|>user\n{content}<|im_end|>\n",
+    ):
+        """
+        Initialize queue-based source reader.
+
+        Args:
+            queue: Queue object that receives text chunks (strings) or None (end signal)
+            tokenizer: Tokenizer instance
+            split_mode: How to split text ('word' or 'sentence')
+            system_prompt: System prompt text (added to first word)
+            user_template: Template for user messages
+        """
+        self.queue = queue
+        self.tokenizer = tokenizer
+        self.split_mode = split_mode
+        self.system_prompt = system_prompt
+        self.user_template = user_template
+
+        # Internal state
+        self.word_buffer = []  # Buffer of words waiting to be consumed
+        self.stream_ended = False
+        self.first_word = True
+        self.template_prefix_added = False
+
+        # Calculate template token lengths
+        if system_prompt:
+            system_text = f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+            self.system_token_len = len(self._tokenize(system_text))
+            self.system_text = system_text
+        else:
+            self.system_token_len = 0
+            self.system_text = ""
+
+        self.user_prefix = user_template.split("{content}")[0]
+        self.user_suffix = user_template.split("{content}")[1]
+        self.user_prefix_token_len = len(self._tokenize(self.user_prefix))
+
+    def _tokenize(self, text: str) -> List[int]:
+        """Tokenize text without adding special tokens."""
+        return self.tokenizer.encode(text, add_special_tokens=False)
+
+    def _fill_buffer(self):
+        """
+        Read from queue and fill word buffer.
+
+        Blocks if queue is empty. Returns when buffer has words or stream ends.
+        """
+        while len(self.word_buffer) == 0 and not self.stream_ended:
+            # Block waiting for next chunk
+            text_chunk = self.queue.get()
+
+            if text_chunk is None:
+                # End of stream signal
+                self.stream_ended = True
+                return
+
+            # Split chunk into words
+            if self.split_mode == "word":
+                words = text_chunk.split()
+            elif self.split_mode == "sentence":
+                import re
+
+                segments = re.split(r"([.?!])\s+", text_chunk)
+                words = [
+                    (
+                        segments[i] + segments[i + 1]
+                        if i + 1 < len(segments)
+                        else segments[i]
+                    )
+                    for i in range(0, len(segments), 2)
+                ]
+            else:
+                raise ValueError(f"Unknown split_mode: {self.split_mode}")
+
+            # Add words to buffer
+            self.word_buffer.extend(words)
+
+    def get_next_word_tokens(self) -> Optional[Tuple[mx.array, int]]:
+        """
+        Get tokens for the next word.
+
+        Blocks if no words are available in the queue. Returns None if stream has ended.
+
+        Returns:
+            Tuple of (token_array, num_tokens) or None if stream ended
+            - token_array: mx.array of shape (1, num_tokens)
+            - num_tokens: Number of tokens in this word/segment
+        """
+        # Fill buffer if empty (blocks here)
+        self._fill_buffer()
+
+        # Handle first word with template prefix
+        if self.first_word and not self.template_prefix_added:
+            self.first_word = False
+            self.template_prefix_added = True
+
+            # Build prefix: system + user_prefix
+            prefix_text = self.system_text + self.user_prefix
+            prefix_tokens = self._tokenize(prefix_text)
+
+            if len(self.word_buffer) == 0:
+                # No words yet, just return prefix
+                if self.stream_ended:
+                    # Stream ended with no content, return prefix + suffix
+                    full_text = prefix_text + self.user_suffix
+                    tokens = self._tokenize(full_text)
+                    return mx.array(tokens).reshape(1, -1), len(tokens)
+                else:
+                    # Return just prefix
+                    return mx.array(prefix_tokens).reshape(1, -1), len(prefix_tokens)
+            else:
+                # Combine prefix with first word
+                first_word = self.word_buffer.pop(0)
+                combined_text = prefix_text + first_word
+                tokens = self._tokenize(combined_text)
+                return mx.array(tokens).reshape(1, -1), len(tokens)
+
+        # No more words and stream ended - just return None to signal end
+        if len(self.word_buffer) == 0 and self.stream_ended:
+            return None
+
+        # No words available
+        if len(self.word_buffer) == 0:
+            return None
+
+        # Get next word and tokenize
+        word = self.word_buffer.pop(0)
+
+        # Add space prefix for non-first words
+        if self.split_mode == "word":
+            word_text = " " + word
+        else:
+            word_text = word
+
+        tokens = self._tokenize(word_text)
+        return mx.array(tokens).reshape(1, -1), len(tokens)
+
+    def is_stream_ended(self) -> bool:
+        """
+        Check if the input stream has ended.
+
+        Returns:
+            True if end-of-stream signal received and buffer empty
+        """
+        return self.stream_ended and len(self.word_buffer) == 0

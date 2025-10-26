@@ -1,12 +1,10 @@
-
 from typing import List, Optional, Tuple
+
 import mlx.core as mx
 
 
 def calculate_wait_words(
-    source_seg_len: List[int],
-    target_word_idx: int,
-    wait_k: int
+    source_seg_len: List[int], target_word_idx: int, wait_k: int
 ) -> int:
     """
     Calculate how many source words to wait for before generating target word.
@@ -40,9 +38,7 @@ def calculate_wait_words(
 
 
 def generate_wait_words_list(
-    source_seg_len: List[int],
-    target_seg_len: List[int],
-    wait_k: int
+    source_seg_len: List[int], target_seg_len: List[int], wait_k: int
 ) -> List[int]:
     """
     Generate wait words list for all target words.
@@ -77,7 +73,7 @@ def create_streaming_attention_mask(
     source_seg_len: List[int],
     target_seg_len: List[int],
     wait_tokens_list: List[int],
-    dtype: mx.Dtype = mx.float32
+    dtype: mx.Dtype = mx.float32,
 ) -> mx.array:
     """
     Create custom attention mask for streaming generation.
@@ -112,10 +108,15 @@ def create_streaming_attention_mask(
     actual_total_len = source_token_len + target_token_len
 
     if actual_total_len < total_len:
-        attn_mask = mx.concatenate([
-            attn_mask[:actual_total_len, :],
-            mx.full((total_len - actual_total_len, total_len), inf_value, dtype=dtype)
-        ], axis=0)
+        attn_mask = mx.concatenate(
+            [
+                attn_mask[:actual_total_len, :],
+                mx.full(
+                    (total_len - actual_total_len, total_len), inf_value, dtype=dtype
+                ),
+            ],
+            axis=0,
+        )
 
     streaming_start = source_token_len
 
@@ -126,28 +127,26 @@ def create_streaming_attention_mask(
 
         if wait_tokens < source_token_len:
             attn_mask[
-                streaming_start:streaming_start + num_tokens,
-                wait_tokens:source_token_len
+                streaming_start : streaming_start + num_tokens,
+                wait_tokens:source_token_len,
             ] = inf_value
 
         streaming_start += num_tokens
 
     if target_token_len > 1:
         attn_mask[
-            source_token_len:source_token_len + target_token_len - 1,
-            :source_token_len
+            source_token_len : source_token_len + target_token_len - 1,
+            :source_token_len,
         ] = attn_mask[
-            source_token_len + 1:source_token_len + target_token_len,
-            :source_token_len
+            source_token_len + 1 : source_token_len + target_token_len,
+            :source_token_len,
         ]
 
     return attn_mask
 
 
 def segment_by_words(
-    text: str,
-    tokenizer,
-    include_spaces: bool = True
+    text: str, tokenizer, include_spaces: bool = True
 ) -> Tuple[List[str], List[int]]:
     """
     Segment text into words and calculate token lengths for each word.
@@ -186,7 +185,7 @@ def calculate_position_ids(
     target_seg_len: List[int],
     current_source_words: int,
     current_target_words: int,
-    pe_cache_length: int = 0
+    pe_cache_length: int = 0,
 ) -> Tuple[mx.array, mx.array]:
     """
     Calculate position IDs for source and target tokens in streaming mode.
@@ -218,10 +217,7 @@ def calculate_position_ids(
     source_position_ids = mx.arange(source_token_len)
 
     target_token_len = sum(target_seg_len[:current_target_words])
-    target_position_ids = mx.arange(
-        pe_cache_length,
-        pe_cache_length + target_token_len
-    )
+    target_position_ids = mx.arange(pe_cache_length, pe_cache_length + target_token_len)
 
     return source_position_ids, target_position_ids
 
@@ -239,21 +235,21 @@ class StreamingState:
 
     def __init__(
         self,
-        source_seg_len: List[int],
         wait_k: int,
+        source_seg_len: Optional[List[int]] = None,
         max_target_words: Optional[int] = None,
-        pe_cache_length: int = 0
+        pe_cache_length: int = 0,
     ):
         """
         Initialize streaming state.
 
         Args:
-            source_seg_len: List of token lengths for each source word
             wait_k: Wait-k parameter
+            source_seg_len: List of token lengths for each source word (optional for queue-based streaming)
             max_target_words: Maximum number of target words to generate
             pe_cache_length: Starting position for target position IDs
         """
-        self.source_seg_len = source_seg_len
+        self.source_seg_len = source_seg_len if source_seg_len is not None else []
         self.wait_k = wait_k
         self.max_target_words = max_target_words
         self.pe_cache_length = pe_cache_length
@@ -262,15 +258,21 @@ class StreamingState:
         self.target_words_generated = 0
         self.is_reading = True
         self.finished = False
+        self.source_stream_ended = False
 
         self.wait_lagging = []
 
+    def add_source_segment(self, token_length: int):
+        """Add a new source segment as it's read from the queue."""
+        self.source_seg_len.append(token_length)
+
+    def mark_source_stream_ended(self):
+        """Mark that the source stream has ended (no more input coming)."""
+        self.source_stream_ended = True
+
     def should_read_next_source(self) -> bool:
         """Check if we should read the next source word."""
-        return (
-            self.source_words_read < len(self.source_seg_len) - 1 and
-            not self.finished
-        )
+        return not self.source_stream_ended and not self.finished
 
     def should_write_next_target(self) -> bool:
         """Check if we should write the next target word."""
@@ -308,10 +310,14 @@ class StreamingState:
         Returns:
             True if we have waited for enough source words
         """
-        required_source_words = min(
-            self.wait_k + self.target_words_generated,
-            len(self.source_seg_len) - 1
-        )
+        required_source_words = self.wait_k + self.target_words_generated
+
+        # If stream has ended, cap at what we have
+        if self.source_stream_ended and len(self.source_seg_len) > 0:
+            required_source_words = min(
+                required_source_words, len(self.source_seg_len) - 1
+            )
+
         return self.source_words_read >= required_source_words
 
     def __repr__(self):

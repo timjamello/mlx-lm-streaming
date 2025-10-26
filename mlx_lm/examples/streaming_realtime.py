@@ -3,13 +3,31 @@
 Real-time StreamingLLM Example
 
 This example demonstrates real-time streaming generation that simulates
-simultaneous translation or live transcription scenarios.
+simultaneous translation or live transcription scenarios using the queue-based API.
 """
 
 import sys
 import time
+from queue import Queue
+from threading import Thread
 
 from mlx_lm import load, stream_generate
+
+
+def feed_text_realtime(queue: Queue, source_text: str, delay: float = 0.5):
+    """
+    Feed text to queue word-by-word with delay to simulate real-time input.
+
+    Args:
+        queue: Queue to feed text into
+        source_text: Source text to process
+        delay: Delay between words (simulates real-time STT)
+    """
+    words = source_text.split()
+    for word in words:
+        time.sleep(delay)
+        queue.put(word + " ")
+    queue.put(None)
 
 
 def realtime_streaming_demo(model, tokenizer, source_text, wait_k=3, delay=0.5):
@@ -22,7 +40,7 @@ def realtime_streaming_demo(model, tokenizer, source_text, wait_k=3, delay=0.5):
         tokenizer: The tokenizer
         source_text: Source text to process
         wait_k: Wait-k policy parameter
-        delay: Delay between word displays (seconds) to simulate real-time
+        delay: Delay between word arrivals (seconds) to simulate real-time
     """
     print("\n" + "=" * 80)
     print("REAL-TIME STREAMING SIMULATION")
@@ -32,15 +50,23 @@ def realtime_streaming_demo(model, tokenizer, source_text, wait_k=3, delay=0.5):
     print(f"\nOutput (streaming):")
     print("-" * 80)
 
+    # Create queue and start feeding thread
+    source_queue = Queue()
+    feed_thread = Thread(
+        target=feed_text_realtime, args=(source_queue, source_text, delay)
+    )
+    feed_thread.start()
+
     start_time = time.time()
     word_count = 0
 
     for response in stream_generate(
         model=model,
         tokenizer=tokenizer,
-        prompt=source_text,
+        source_queue=source_queue,
         wait_k=wait_k,
         max_new_words=50,
+        system_prompt="Translate the following English text to French",
         temp=0.7,
     ):
         if hasattr(response, "word_complete") and response.word_complete:
@@ -48,9 +74,6 @@ def realtime_streaming_demo(model, tokenizer, source_text, wait_k=3, delay=0.5):
 
             # Print the word in real-time
             print(f"{response.text}", end=" ", flush=True)
-
-            # Simulate processing delay
-            time.sleep(delay)
 
     elapsed = time.time() - start_time
 
@@ -62,6 +85,8 @@ def realtime_streaming_demo(model, tokenizer, source_text, wait_k=3, delay=0.5):
         print(f"Token generation speed: {response.generation_tps:.2f} tokens/sec")
         print(f"Peak memory: {response.peak_memory:.2f} GB")
 
+    feed_thread.join()
+
 
 def interactive_mode(model, tokenizer):
     """
@@ -70,12 +95,12 @@ def interactive_mode(model, tokenizer):
     print("\n" + "=" * 80)
     print("INTERACTIVE STREAMING MODE")
     print("=" * 80)
-    print("Enter prompts to see streaming generation in action.")
+    print("Enter source text to see streaming generation in action.")
     print("Type 'quit' or 'exit' to stop.\n")
 
     while True:
         try:
-            prompt = input("Prompt> ").strip()
+            prompt = input("Source text> ").strip()
 
             if prompt.lower() in ["quit", "exit", "q"]:
                 print("Exiting...")
@@ -91,17 +116,31 @@ def interactive_mode(model, tokenizer):
             print(f"\nStreaming output (wait-k={wait_k}):")
             print("-" * 80)
 
+            # Create queue and feed text
+            source_queue = Queue()
+
+            def feed_text():
+                words = prompt.split()
+                for word in words:
+                    source_queue.put(word + " ")
+                source_queue.put(None)
+
+            feed_thread = Thread(target=feed_text)
+            feed_thread.start()
+
             for response in stream_generate(
                 model=model,
                 tokenizer=tokenizer,
-                prompt=prompt,
+                source_queue=source_queue,
                 wait_k=wait_k,
                 max_new_words=30,
+                system_prompt="Translate to French",
                 temp=0.7,
             ):
                 if hasattr(response, "word_complete") and response.word_complete:
                     print(f"{response.text}", end=" ", flush=True)
 
+            feed_thread.join()
             print("\n" + "-" * 80 + "\n")
 
         except KeyboardInterrupt:
