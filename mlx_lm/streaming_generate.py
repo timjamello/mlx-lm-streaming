@@ -267,9 +267,9 @@ def stream_generate_streaming(
                         "source_timestamps": state.source_token_timestamps,
                         "source_offset": attn_cache.source_offset,
                         "current_time": time.time(),
-                        "recency_window": 5.0,
-                        "source_boost": 3.0,
-                        "target_dampening": 2.0,
+                        "recency_window": 2.0,
+                        "source_boost": 5.0,
+                        "target_dampening": 1.0,
                     }
 
                     logits = model(
